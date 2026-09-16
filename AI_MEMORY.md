@@ -1,0 +1,497 @@
+# 1. Project Overview
+- **Project Name**: BOB Telegram Bot and SaaS Exam System
+- **Core Purpose**: A high-performance, multi-tenant SaaS online examination & assessment platform integrated with Telegram Bot services and a modern web dashboard.
+- **Key Tenet**: Multi-tenant, secure, scalable, and built around a **Universal Reusability Doctrine**.
+
+# 2. Tech Stack & Architecture
+- **Frontend**: Next.js (TypeScript, App Router with standalone output for AWS Lambda / Docker / VPS), Tailwind CSS.
+- **Backend**: FastAPI (Python), Mangum ASGI adapter (for AWS Lambda serverless), Async SQLAlchemy, Pydantic v2 (with `email-validator`), Uvicorn.
+- **Database**: PostgreSQL (`bob_tg_exam` on localhost:5432, user: `postgres`, password: `root`).
+- **Bot Integration**: Python Telegram Bot / aiogram with webhook & modular dispatcher architecture (zero threads, zero background worker pools, in-request execution for Lambda safety).
+- **Icons & Styling**: Lucide React, Tailwind CSS design system with CSS variables / design tokens.
+- **Theme & Design System**: Ambient iOS glow backdrop (`.ios-bg-mesh`), glassmorphic panels (`.glass-panel`, `.glass-nav`, `.glass-dropdown`), tri-state Theme Engine (**Light**, **Dark**, and **Auto / System** preference) with flicker-free hydration, class-based dark mode, and a reusable `ThemeToggle` component.
+
+# 3. Two-Tier Administrative Role Architecture
+The system defines exactly two administrative roles:
+1. **`Administration`**:
+   - Master account with full, unrestricted access to the entire system.
+   - Automatically bypasses all permission checks (`require_permission` always permits `Administration`).
+2. **`Admin`**:
+   - Scoped administrator restricted strictly to their assigned granular permissions recorded in `admins_permissions`.
+   - Access denied to any module or action whose permission key is not explicitly assigned.
+
+# 4. Universal Reusability & Simplicity Doctrine
+- **Keep it Simple & Optimized**: No over-engineering, no unnecessary files, no complex bloat.
+- **CI/CD Auto-Deployment**: GitHub Actions workflow (`.github/workflows/deploy-backend.yml`) automatically builds and updates the AWS Lambda backend on every push to `main`.
+- **Environment Centralization**: All critical parameters reside in `.env` (including `ENABLE_DOCS` toggle to show/hide Swagger/OpenAPI/Redoc documentation endpoints).
+- **Automatic Startup Lifecycle**: On server startup, the database is created if missing, tables and columns synced non-destructively, and the default Administration account is auto-created only when the `admins` table is empty.
+- **UI Components Doctrine**: Build every UI-related element as a standalone, modular component so it can be reused anywhere at any time without duplicating code.
+- **Code Cleanliness**: Zero comments or redundant docstrings across both frontend and backend code files.
+- **Non-Destructive Database**: Never drops or deletes database columns or rows when changes occur.
+
+### A. Frontend UI & Layout Layer (`frontend/src/components/`)
+- **Theme & Appearance (`components/theme/`)**: `ThemeProvider`, `ThemeToggle` (Light / Dark / Auto switcher), `useTheme` hook with `theme_mode` persistence.
+- **Primitive UI Elements (`components/ui/`)**: `Button` (iOS rounded-2xl styling, `inline-flex items-center gap-1.5 whitespace-nowrap`), `IconButton` (reusable icon-only buttons/links with automatic CSS SVG sizing `[&>svg]:w-3.5`, variants: ghost/secondary/primary/danger/warning/indigo/emerald, sizes: xs/sm/md/lg, Link href support), `Pagination` (universal pagination supporting classic pages mode and Facebook-like continuous stream infinite scroll via IntersectionObserver, item range indicators, and mode toggle), `Skeleton` (universal pulsating placeholder primitive with variable rounded corners and dimensions), `Input` (labels, helper text, error messages, icons, glass blur), `Modal` (reusable iOS frosted glass dialogs), `Card` (compound components), `Badge` (status badges), `Alert` (dismissible notifications).
+- **Feedback & Notification (`components/feedback/`)**: `ToastProvider` & `useToast` with floating toast alerts with screen-bounded responsive positioning (`left-3 right-3 sm:left-auto sm:right-4`).
+- **Navigation & Shell (`components/layout/`)**:
+  - `AdminSidebar`: Permanently locked `w-56 shrink-0` navigation with outer sizing anchor and inner `fixed top-0 left-0 bottom-0 w-56 z-40` frame, Question Bank link (`/admin/questions`), active state pill styling (`bg-neutral-900 text-white dark:bg-white dark:text-neutral-900`), mobile slide-over drawer with backdrop blur, and profile card linking to `/admin/profile`.
+  - `Navbar`: Sticky top bar (`h-14 border-b glass-nav`), dynamic page title with truncation, live clock (`hh:mm:ss a • Day, Month DD`), `ThemeToggle`, and user profile circle avatar with glass dropdown menu (`My Profile`, `Sign Out`).
+
+### B. Frontend Logic, Hooks & API Services (`frontend/src/`)
+- **Authentication State (`context/AuthContext.tsx`)**: Centralized `AuthProvider` & `useAuth` hook managing token persistence, profile fetching, login, logout, profile updates (`updateProfile`), password changes (`changePassword`), and protected route guarding.
+- **Standardized API Client (`lib/api.ts`)**: Reusable HTTP client with automatic auth bearer token injection, generic error handling, and typed responses.
+- **Question Bank Types (`lib/types.ts`)**: `QuestionCategory`, `QuestionOption`, `QuestionItem`.
+
+### C. Backend Architecture (`backend/app/`)
+- **Standardized Response Envelopes (`schemas/response.py`)**: Unified `ApiResponse[T]`, `PaginatedResponse[T]`.
+- **Reusable FastAPI Dependencies (`core/dependencies.py`)**: `get_db`, `get_client_meta`, `get_current_admin`, `get_current_session`, `require_roles(...)`, `require_permission(...)`.
+- **Base Models & DB Engine (`db/session.py`)**: Automated non-destructive DB creation, schema synchronization, auto-renaming of tables, and auto-seeding of default Administration only when the `admins` table is empty.
+- **Authentication Router (`api/v1/auth.py`)**:
+  - `POST /auth/login`, `GET /auth/me`, `PUT /auth/me`, `POST /auth/change-password`, `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/sessions`, `DELETE /auth/sessions/{id}`.
+- **Question Bank Router (`api/v1/questions.py`)**:
+  - `GET /questions/categories/tree`: Full recursive category hierarchy with question counts per node.
+  - `GET /questions/categories`, `POST /questions/categories`, `GET /questions/categories/{id}`, `PUT /questions/categories/{id}`, `DELETE /questions/categories/{id}`.
+  - `GET /questions`, `POST /questions`, `GET /questions/{id}`, `PUT /questions/{id}`, `DELETE /questions/{id}`: Question and options CRUD with atomic transactions and cascade deletion.
+
+### D. Database Table Names
+1. **Admin Core**:
+   - `admins`: Primary administrator accounts.
+   - `admins_audit_logs`: Row-level change audit trail.
+   - `admins_login_attempts`: Hardware/IP telemetry for brute-force protection.
+   - `admins_sessions`: Active and revoked authentication sessions.
+   - `admins_permissions`: Granular assigned permissions for scoped `Admin` users.
+2. **Question Bank**:
+   - `questions_categories`: Hierarchical category tree with self-referencing `parent_id`.
+   - `questions`: Question text, category linkage, difficulty, explanation.
+   - `questions_options`: Question answer choices, correct flag, explanation, sort order.
+
+# 5. Pacing & Development Workflow Rules
+- **No Monolithic Generations**: Step-by-step only, driven by explicit user instructions.
+- **Strict User Guidance**: Implement only what is specifically requested in each prompt.
+
+# 6. Current Development State
+- **Safe Category Deletion Guard**:
+  - `DELETE /questions/categories/{id}` checks direct questions and all nested descendant subcategory questions.
+  - Deletion blocked with `HTTP 400` if questions exist, providing explicit guidance (e.g., `"Cannot delete 'Medical'. Its subcategories (DNA) contain 1 questions. Move these subcategory questions to another category to delete."`).
+  - Frontend Category Delete modal detects questions, blocks the delete button, and presents a direct "Move Questions First" action.
+- **Question Move System (`POST /questions/move`)**:
+  - Moves all questions from a source category (with optional subcategories) or selected question IDs to a destination category in a single atomic transaction.
+  - Accessible via "Move Questions" modal on `/admin/categories` and floating batch action toolbar on `/admin/questions`.
+- **Dedicated Question Creation & Editing Pages**:
+  - Reusable `QuestionForm` component (`components/questions/QuestionForm.tsx`) conforming to Universal Reusability Doctrine with group-wise searchable category selector, difficulty pills, and dynamic choices builder.
+  - Dedicated `/admin/questions/new` (Create Question) and `/admin/questions/[id]/edit` (Edit Question) routes.
+- **Recursive Cumulative Category Question Counting & Searchable Filter**:
+  - Cumulative upward propagation of question counts across taxonomy branches.
+  - Downward inherited category querying with group-wise searchable multi-select filter popover and taxonomy breadcrumbs on cards.
+- **Taxonomy & Difficulty Levels**:
+  - Expanded difficulty taxonomy across backend schemas (`pattern="^(easy|medium|hard|expert)$"`), database validation, frontend types, and UI components (`easy`, `medium`, `hard`, `expert` with dedicated purple badge and pill styling).
+- **Universal CategoryTreeSelect Component (`components/categories/CategoryTreeSelect.tsx`)**:
+  - Reusable group-wise searchable category tree selector with live filtering, node expand/collapse, question count badges, disabled node guarding, clear action, and full breadcrumb path preview.
+  - Deployed across "Move Selected Questions" batch modal on `/admin/questions`, "Move Questions" modal on `/admin/categories`, `QuestionForm.tsx`, and `/admin/questions/bulk`.
+  - Updated `Modal.tsx` with `overflowVisible?: boolean` support to let dropdown popovers float without clipping or forced inner scrollbars.
+  - Resolved stacking context: dynamic `relative z-50` when open inside `CategoryTreeSelect`, `relative z-30` on category filter panel, and `relative z-10` on lower content grids so popovers always float over textareas and card containers.
+- **Bulk Question Entry System**:
+  - Unambiguous, error-proof format using explicit `---` question break syntax, numbered prompts (`Question 1:` stripped upon ingestion), variable option counts (`[A]` through `[Z]`), correct markers (`*`), and optional option/question-level explanations.
+  - Backend `POST /questions/bulk` handled inside a single file (`backend/app/api/v1/questions.py`), accepting `List[QuestionCreate]` with atomic batch commits and audit logging.
+  - Dedicated `/admin/questions/bulk` route with `CategoryTreeSelect`, default difficulty pills, side-by-side editor/preview, blank & filled templates, and live validation.
+  - Navigation integrated via "Bulk Entry" button on `/admin/questions` and `/admin/questions/new`.
+- **URL-Driven Search & Filtering on `/admin/questions`**:
+  - The URL query parameters (`search`, `category` / `category_ids` / `categories`, `difficulty`, `page`) are now the single source of truth for all filters, search terms, and pagination on `/admin/questions`.
+  - Links navigating to `/admin/questions` from other pages (e.g. category tree nodes on `/admin/categories?category=...` or bulk import redirects `/admin/questions?category=...`) automatically apply the relevant category filter and reset pagination.
+  - Features 350ms debounced search synchronization, instant category toggle/clear, difficulty pills, clean URL query generation (default params omitted), and smooth `router.replace(url, { scroll: false })` navigation with browser history support.
+- **Reusable Question UI Components**:
+  - `IconButton` (`components/ui/IconButton.tsx`): Highly reusable icon button and link component. Automatically enforces SVG sizing via child CSS selectors (`[&>svg]:w-3.5 [&>svg]:h-3.5`, etc.), eliminates repetitive utility classes, and supports variants (`ghost`, `danger`, `warning`, `indigo`, `emerald`, `secondary`, `primary`), sizes (`xs`, `sm`, `md`, `lg`), rounded styling, tooltips, and Next.js `Link` mode with `href`.
+  - `DifficultyBadge` (`components/questions/DifficultyBadge.tsx`): Standardized difficulty badge component with normalized styling for `easy`, `medium`, `hard`, and `expert`.
+  - `QuestionCard` (`components/questions/QuestionCard.tsx`): Modular question card encapsulating checkboxes, question numbering, difficulty badges, category hierarchy breadcrumbs, question prompts, option choices with letter badges and correct state, explanations, and action buttons (`IconButton` for edit/delete). Can be reused anywhere (Question Bank, Exam question selectors, Preview modals).
+  - `Skeleton` (`components/ui/Skeleton.tsx`): Universal UI primitive component providing pulsing placeholders with rounded token variants (`sm`, `md`, `lg`, `xl`, `2xl`, `3xl`, `full`).
+  - `CategoryTreeSkeleton` (`components/categories/CategoryTreeSkeleton.tsx`): Reusable hierarchical tree skeleton component supporting full tree mode (`count={5}`) on `/admin/categories` and compact mode (`compact={true}`) inside `CategoryTreeSelect` and the category filter dropdown.
+  - `QuestionCardSkeleton` (`components/questions/QuestionCardSkeleton.tsx`): Zero-lag skeleton card matching exact question card geometry with pulsating placeholders, eliminating jarring blank loading screens.
+  - `Pagination` (`components/ui/Pagination.tsx`): Universal pagination component supporting dual modes:
+    - `mode="pages"`: Classic numbered pagination pills with ellipsis, Prev/Next buttons, item count range.
+    - `mode="infinite"`: True Facebook-style continuous feed stream. Uses `IntersectionObserver` sentinel (300px rootMargin) to append new batches seamlessly with `setQuestions(prev => [...prev, ...newItems])` without wiping previous cards.
+    - Displays `QuestionCardSkeleton count={2}` at the bottom of the feed while loading next batches.
+    - Reached-end status indicator when all items are loaded.
+    - `showModeToggle`: Seamless user-facing switcher between Pages and Infinite scroll.
+  - `CategoryCountBadge` (`components/categories/CategoryCountBadge.tsx`): Reusable category question count badge adhering to the exact hierarchical count breakdown format:
+    - Root category: displays "count all" cumulative total, followed by subcategory progression chain if subcategories exist (e.g. `10 - 10>10>7>4` or `7 - 7>7>7>4`).
+    - Subcategory with children: displays direct questions count followed by child progression chain (e.g. `0 - 7>7>4`, `3 - 7>4`).
+    - Leaf category: displays only its direct question count (e.g. `4`).
+    - Provides descriptive tooltip explaining total, direct, and subcategory questions.
+  - **Dual Exact vs. Inherited Category Filtering**:
+    - Backend `GET /questions` accepts `exact: bool = False`. When `exact=False`, automatically queries the selected category plus all descendant subcategories. When `exact=True`, strictly filters by the given category IDs without child expansion.
+    - Category schemas (`CategoryResponse`, `CategoryTreeResponse`) and frontend types (`QuestionCategory`) provide `direct_count: int` alongside `question_count`.
+    - `/admin/questions` category filter includes an interactive toggle switch between `Include Subcategories` (inherited) and `Exact Category Only` (exact match), synced to URL parameter `&exact=true`.
+    - Filter pills below the search bar feature a one-click toggle pill `[Exact Match Only]` / `[Include Subcategories]` that lets admins instantly switch modes with active item direct/total indicators.
+  - **Universal Mobile Responsiveness & Layout Guard**:
+    - Resolved Category Filter popover left-clipping on mobile using viewport-bounded positioning (`fixed inset-x-3 sm:absolute sm:inset-x-auto sm:left-0 sm:w-96`).
+    - Resolved category tree badge overlapping action buttons on mobile in `/admin/categories` by restructuring tree rows with responsive flex-wrap alignment, micro-gaps, and reduced mobile left-indentation (`ml-1.5 sm:ml-4`).
+    - Made difficulty filter bar horizontally scrollable on small screens (`overflow-x-auto no-scrollbar`).
+    - Enhanced `QuestionForm.tsx` with mobile-stacked action buttons, responsive choice headers, and `IconButton` controls.
+- **Code Cleanliness**: Zero comments across all frontend and backend code files.
+
+### E. Telegram Bot & Examination Subsystem
+1. **Database Architecture (`BigInteger` Auto-Increment PKs & `created_by`)**:
+   - `telegram_users`: `id: BigInteger` (PK, autoincrement), `telegram_id: BigInteger`, `is_blocked: Boolean`, `is_vip: Boolean`, timestamps.
+   - `telegram_flow_nodes`: `id: BigInteger` (PK, autoincrement), `parent_id: BigInteger` (self-referencing FK), `trigger_command`, `label`, `action_type` (`menu_nodes`, `text_message`, `category_browse`, `start_exam`, `url_link`), `content_text`, `category_id: String(36)` (FK to `questions_categories.id`), `picking_strategy` (`direct_start`, `subject_wise`, `random_overall`, `ask_user`), `question_count_mode`, `fixed_count`, `difficulty_mode`, `fixed_difficulty`, `scope_mode` (`exact_category_only`, `include_subtopics`), `timer_seconds`, `negative_marking_rate`, `url`, `row_index`, `sort_order`, `is_active`, `created_by: String(36)` (FK to `admins.id`).
+   - `telegram_bot_settings`: `id: Integer` (PK, autoincrement), `bot_token`, `bot_username`, `webhook_url`, `webhook_secret`, `is_webhook_active`, `default_count_presets`, `default_negative_marking`, `limit_enabled`, `limit_period` (`hourly`, `daily`, `weekly`, `monthly`, `custom_interval`), `max_exams_per_period`, `max_questions_per_period`, `custom_interval_hours`, `cooldown_minutes`, `limit_reached_message`, `created_by: String(36)`.
+   - `telegram_promotions`: `id: BigInteger` (PK, autoincrement), `title`, `promo_type`, `content_text`, `media_url`, `button_text`, `button_url`, `trigger_event` (`after_exam`, `on_start`, `on_limit_reached`, `category_specific`), `target_category_id: String(36)`, `priority`, `is_active`, `impressions_count`, `clicks_count`, `created_by: String(36)`.
+   - `telegram_exam_sessions`: `id: BigInteger` (PK, autoincrement), `user_id: BigInteger` (FK to `telegram_users.id`), `category_id: String(36)`, `flow_node_id: BigInteger`, `strategy_used`, `difficulty`, `total_questions`, `current_index`, `question_ids`, `correct_count`, `wrong_count`, `skipped_count`, `score`, `max_score`, `accuracy_percentage`, `status`, `started_at`, `completed_at`.
+   - `telegram_exam_answers`: `id: BigInteger` (PK, autoincrement), `session_id: BigInteger` (FK to `telegram_exam_sessions.id`), `question_id: String(36)`, `selected_option_id: String(36)`, `is_correct`, `points_awarded`, `time_spent_seconds`, `answered_at`.
+2. **Backend Engine (`backend/app/services/telegram_engine.py` & `backend/app/api/v1/telegram.py`)**:
+   - Webhook endpoint (`POST /api/v1/telegram/webhook`) with secret token verification and background update processing.
+   - Non-blocking `TelegramApiClient` utilizing standard library `urllib.request` wrapped in `asyncio.to_thread` (zero third-party dependencies required).
+   - Dynamic conversational flow tree building (`GET /flow`, `POST /flow`, `PUT /flow/{id}`, `DELETE /flow/{id}`).
+   - Question sourcing algorithms supporting direct exam start, balanced subject-wise distribution, pure random, and interactive prompting.
+   - User quota engine enforcing hourly/daily/weekly/monthly/custom interval limits and exam cooldowns with VIP bypass.
+   - Targeted multi-promotional campaign engine with event hooks, impressions, and CTR tracking.
+   - Webhook management endpoints: `POST /set-webhook`, `POST /delete-webhook`, `GET /webhook-info`, `POST /test-connection`.
+   - Flexible question scope handling: defaults to `ask_user` (candidate decides at exam start whether to include subtopics or test exact category), with support for `include_subtopics` and `exact_category_only`.
+3. **Frontend Bot Studio Components (`frontend/src/components/bot/`)**:
+   - `BotFlowTree`: Conversational hierarchy tree with expand/collapse, instant actions, and clean Lucide iconography (zero Unicode icons).
+   - `BotLimitsForm`: Rate limiting and quota rules configuration.
+   - `BotPromotionsList`: Targeted sponsorship and promotional campaigns card grid.
+   - `BotWebhookForm`: API credentials setup, 1-click webhook registration, and live health inspector (`getWebhookInfo`).
+   - `BotSessionsTable`: Candidate exam audit log and user quota permissions table.
+   - `BotSessionDetailModal`: Scorecard breakdown and answer explanation inspection.
+   - `BotSkeleton`: Reusable skeleton loading states (`BotFlowSkeleton`, `BotTableSkeleton`, `BotCardGridSkeleton`, `BotFormSkeleton`) ensuring zero blank layout flashes.
+   - `FlowNodeModal` & `PromotionModal`: Node and campaign editing modals with `ask_user` Scope Filter default without forced auto-insertions.
+4. **Navigation**:
+   - Integrated "Telegram Bot" nav item with `Bot` icon in `AdminSidebar.tsx` guarded by `bot:manage` or `Administration` role.
+
+# 7. Active Task & Context
+- Harmonized Telegram Bot Studio UI completely with Questions and Categories design language:
+  - Eliminated isolated hardcoded dark/slate styling and double container padding.
+  - Replaced all ad-hoc wrappers with universal `.glass-panel` rounded-3xl containers, matching light & dark frosted glass mesh backdrops and typography.
+  - Aligned page header with breadcrumbs (`Dashboard • Telegram Bot`), status pills, action buttons, and 4 top metric summary cards (Flow Nodes, Campaigns, Exam Sessions, Candidates).
+  - Adopted standard pill navigation tabs matching Questions and Categories filter bars.
+  - Unified `BotFlowTree` layout to match `CategoriesPage` tree hierarchy with search filter, expand/collapse toggles, hierarchical tree connectors (`border-l-2 border-neutral-200/60 dark:border-white/5`), and standard `IconButton` controls.
+  - Replaced custom fixed dialog overlays in `FlowNodeModal`, `PromotionModal`, and `BotSessionDetailModal` with the centralized `@/components/ui/Modal` component, standard `<Input>` and `<Button>` components, and light/dark theme tokens.
+- Resolved auto-reappearing default nodes in `GET /flow` (`backend/app/api/v1/telegram.py`): eliminated hardcoded fallback seeding so deleting all nodes leaves the tree clean and empty.
+- Eliminated delayed full-screen refresh and skeleton flashing when deleting or editing items across all admin pages (`/admin/bot`, `/admin/categories`, `/admin/questions`):
+  - Updated `Button.tsx` to default `type="button"`, preventing accidental native form submissions.
+  - Implemented optimistic state updates (instant 0ms deletion from local React state, count decrement, and modal closing).
+  - Added `silent: boolean = false` to all background sync operations (`fetchFlow`, `fetchCategories`, `fetchQuestions`, `fetchPromotions`), preventing unmounting and flickering skeletons after user actions.
+- **Conversational Flow Tree Engine & Dispatch Alignment (Strict User Flow Only)**:
+  - Identified and fixed key action type mismatch between database/frontend (`"start_exam"`, `"category_browse"`, `"url_link"`) and legacy engine handlers (`"exam_launcher"`, `"category_hierarchy"`, `"external_url"`).
+  - Refactored `TelegramEngine.execute_node_action` to accurately handle all node action types (`menu_nodes`, `category_browse`, `start_exam`, `text_message`, `url_link`).
+  - **Strictly use ONLY created flow**: Removed all auto-injected fallback buttons ("Browse Taxonomy & Exams", "Browse Categories & Exams"). If no conversational flow nodes are configured in the admin studio, the bot sends an informative notice (`No conversational flow has been configured yet. Please check back later.`) without showing any buttons or revealing the questions bank.
+  - If a `start_exam` node does not have a category assigned, it prompts the candidate to contact an admin rather than auto-opening the question bank root.
+  - Added active session detection on `/start` with prompt to "Resume Active Exam" or "Abandon & Start New".
+- **Quick Category Flow Builder & Multi-Child Generation**:
+  - Implemented `POST /flow/batch` and `DELETE /flow` (clear all) endpoints in `backend/app/api/v1/telegram.py` with `BotFlowBatchCreate` schemas.
+  - Created `QuickFlowModal.tsx`: allows picking a root/subject category, automatically lists all child topics with checkboxes, question counts, customizable button labels, and action types ("Start Exam" or "Submenu").
+  - Includes presets for question count, difficulty, sourcing strategy, and subtopics scope. Supports grouping under a new parent menu or adding directly under an existing node.
+  - Added "Quick Category Flow" button and "Clear Flow" button in `BotFlowTree.tsx` header, plus "+ From Category" icon on each node row for nested child batch generation.
+- **Seeded Complete Conversational Flow**:
+  - Reset and seeded a complete, multi-branch conversational flow in the database:
+    - Root 1: `Take Exam` (menu_nodes) -> Sub-menu: `Medical Sciences` (containing `Physics (Vectors)`, `Biology & Genetics`, `Genetics & DNA`), plus `General Test Bank` (10 Qs from Test Bank).
+    - Root 2: `Browse All Subjects` (category_browse) -> interactive taxonomy browser.
+    - Root 3: `Exam Rules & Guide` (text_message, `/help`) -> instructions.
+- **Scorecard Delivery Fix (Post-Exam Completion)**:
+  - Discovered and resolved the root cause for missing messages after exams end: Telegram Bot API strictly rejects button URLs pointing to `http://localhost` or `http://127.0.0.1` (`Wrong HTTP URL`), causing the entire scorecard `sendMessage` payload to be rejected.
+  - Implemented URL sanitizer in `TelegramApiClient._clean_keyboard_urls` that filters out localhost or malformed URLs before sending to Telegram.
+  - Added automatic fault-tolerant fallback in `send_message` and `edit_message_text`: if Telegram ever rejects button URLs or returns entity parsing errors, it automatically retries with cleaned payloads to ensure the scorecard is always delivered.
+  - Replaced Unicode horizontal line dividers (`\u2501`) with standard ASCII dividers (`--------------------`) and removed Unicode emoji icons from quota notifications.
+- **Configured Rate Limiting & Targeted Promotional Campaigns**:
+  - Configured `BotSetting` rate limits: `limit_enabled=True`, `limit_period="daily"`, `max_exams_per_period=5`, `max_questions_per_period=50`, `cooldown_minutes=2`, and custom quota notification text.
+  - Configured 3 live promotional campaigns in `TelegramPromotion` with valid public URLs:
+    - `after_exam`: "Official Study Community" with `[Join Channel]` button.
+    - `on_limit_reached`: "Unlock Unlimited Exams (VIP)" with `[Request VIP Status]` button.
+    - `on_start`: "Interactive Examination Portal" with `[Learn More]` button.
+- **Conversational Flow State Enforcement & Outdated Button Invalidation**:
+  - **Previous Button Deactivation**: Added `TelegramApiClient.edit_message_reply_markup` and `remove_message_buttons`. When an option is selected that progresses the user forward or launches an exam poll, the inline keyboard on the prior message is stripped immediately so old buttons cannot be actioned.
+  - **Question Poll Invalidation**: When delivering question N, any previous poll message's inline buttons (`[Skip Question]`, `[End Exam]`) are wiped via `session.current_poll_message_id`. When a poll answer arrives via webhook or skip callback, the buttons on that poll are immediately removed.
+  - **Out-of-Flow Blocking ("without flow don't allow to action")**: Tracks `TelegramUser.flow_state` (`idle`, `in_flow`, `in_exam`), `current_flow_node_id`, `last_message_id`, and `last_active_session_id`. If a candidate has an active exam session in progress and attempts to click older menu navigation buttons (`fn:`, `cat:`, `start_nav`, `ex_init:`), the bot blocks execution, triggers a popup alert (`Exam is currently in progress. Please complete or end your active exam first.`), strips buttons from the old message, and logs the blocked action.
+  - **Outdated Step Rejection**: In `skp:` and `end:` callbacks, strictly validates `session.current_index == q_idx` and `session.status == "in_progress"`. Out-of-sequence clicks are rejected with an alert (`This question is no longer active in your flow.`) and the outdated buttons are stripped.
+  - **Complete Conversation Audit Trail (`telegram_conversation_logs`)**:
+    - Created `telegram_conversation_logs` table recording `user_id`, `telegram_id`, `action_type`, `flow_node_id`, `session_id`, `question_id`, `message_id`, `details` (JSON payload), and `created_at`.
+    - Automatically records: `command_start`, `flow_node_click`, `menu_node_view`, `category_select`, `exam_start`, `poll_question_sent`, `exam_answer` (with option, correctness, points), `exam_skip`, `exam_end_requested`, `exam_completed` (with score and accuracy), and `blocked_out_of_flow`.
+- **Two-Step Exam Configuration Wizard**:
+  - Replaced single-step simultaneous selection with a two-step wizard for exam launches.
+  - **Step 1 (Question Quantity)**: Triggered via `ex_init:{cat_id}:{node_id}`. Displays clean quantity buttons (`5 Questions`, `10 Questions`, etc.) generated from `setting.default_count_presets` and a `[Back]` button.
+  - **Step 2 (Question Difficulty)**: Triggered via `ex_cnt:{cat_id}:{node_id}:{count}`. Edits message in-place, carries selected quantity, and displays difficulty options (`Mixed / All Levels`, `Easy`, `Medium`, `Hard`) plus a `[Back to Question Quantity]` button.
+  - **Step 3 (Launch Exam)**: Triggered via `ex_diff:{cat_id}:{node_id}:{count}:{diff}`. Strips inline buttons from the configuration message, verifies quota, creates `ExamSession` with the chosen quantity and difficulty, updates user flow state to `in_exam`, and dispatches Question 1 poll.
+  - **Node Action Alignment**: In `execute_node_action` for `start_exam`: if `question_count_mode == "ask_user"`, smoothly routes to Step 1; if `difficulty_mode == "ask_user"`, routes to Step 2 with `fixed_count`; if both are fixed, launches directly.
+- **Duplicate Menu Elimination (Smooth Single-Menu Flow)**:
+  - Added `delete_message` to `TelegramApiClient` with automatic fallback to `remove_message_buttons`.
+  - Upon receiving repeated `/start` commands or new menu commands, the bot immediately deletes the previous menu message (`user.last_message_id`) or strips its buttons so old menus cannot remain active or duplicate in the chat.
+  - In `start_nav`, message is edited in-place whenever `msg_id` is present, avoiding creating new messages in chat history.
+- **Immediate Block Enforcement**:
+  - Added strict `user.is_blocked` checks at the entrance of `handle_update` for `message`, `callback_query`, and `poll_answer`.
+  - Blocked users attempting any message interaction are denied with `"Your account has been suspended by administration. Access to this bot is restricted."`.
+  - Blocked users attempting callback actions receive a high-priority Telegram alert (`"Your account has been suspended by administration."`) and their buttons are stripped.
+- **VIP Status & Rate Limit Enforcement**:
+  - Verified `check_user_quota`: VIP candidates (`is_vip=True`) completely bypass cooldowns and period quotas (`daily`, `hourly`, `weekly`, `monthly`, `custom_interval`).
+  - Rate-limited users are blocked from starting exams and presented with the configured quota notification and an instant `on_limit_reached` promotional button.
+- **Promotions Delivered Across All Trigger Events**:
+  - `on_start`: Integrated into `build_start_menu` with announcement headline and promotional URL button.
+  - `after_exam`: Integrated into post-exam completion scorecard.
+  - `on_limit_reached`: Integrated into quota limit rejection screen.
+- **Frontend Infinite Request Cascade Resolution**:
+  - **Root Cause Identified**: `ToastProvider` was declaring `toast` as an unmemoized object literal on every render. Because fetch callbacks (`fetchSessions`, `fetchUsers`, `fetchPromotions`, etc.) had `toast` in their `useCallback` dependency array, every toast addition (or dismissal) generated new function references. The tab-switching `useEffect` in `admin/bot/page.tsx` was tracking these unstable callback references, causing it to re-fire on every animation frame. This saturated browser sockets, triggered `Failed to fetch`, called `toast.error()`, and created an infinite loop.
+  - **Toast Provider Stability**: Wrapped `toast` and `contextValue` in `useMemo` in `Toast.tsx`. Added automatic deduplication (`prev.some(...)`) and stack capping (maximum 4 concurrent items) so identical error alerts cannot flood the screen.
+  - **Isolated Tab Effects**: Removed callback references from the tab-switching `useEffect` in `admin/bot/page.tsx`, making it depend strictly on `[activeTab]`.
+  - **API Parameter Interoperability**: Updated backend endpoints `/telegram/sessions` and `/telegram/users` in `app/api/v1/telegram.py` to accept both `limit` and `page_size`, and guarded against empty IN clause queries.
+- **Candidate Directory & User Statistics Resolution**:
+  - **Root Cause Identified**: The `flow_state` field in `TelegramUserResponse` was non-optional (`str = "idle"`). Candidate rows created before the flow state migration had `flow_state = NULL` in the database. When `/telegram/users` was fetched, Pydantic v2 raised a `ValidationError` (HTTP 500), causing the request to fail silently and leaving `users` as `[]` ("No candidate accounts recorded yet").
+  - **Schema & Model Interoperability**: Updated `TelegramUserResponse` in `app/schemas/telegram.py` with `flow_state: Optional[str] = "idle"`, `total_exams: int = 0`, and quota metrics. Added fallback defaulting in `app/api/v1/telegram.py`.
+  - **Eager Stat Hydration**: Configured `admin/bot/page.tsx` to preload sessions, users, and promotions on initial mount so the top summary cards (`Flow Nodes: 3`, `Campaigns: 3`, `Exam Sessions: 29`, `Candidates: 9`) and candidate table are populated immediately.
+- **Telegram Bot Studio Reorganization (Human-Crafted SaaS Operations Cockpit)**:
+  - **Bot Operations Command Deck (`frontend/src/app/admin/bot/page.tsx`)**:
+    - Transformed the admin bot page into an executive operations command center.
+    - Added a persistent Bot Identity Hero with squircle avatar, live pulse connection indicator, bot username badge with 1-click `t.me/{username}` clipboard copy, direct "Open in Telegram" link, Test Ping action, and unified sync button.
+    - Replaced flat rectangular stat boxes with interactive Cognitive Operations Cards (Conversational Flow, Attempt Quotas, Campaigns & Growth, Candidate Audits) that double as quick jump-links to their respective workspaces.
+    - Redesigned navigation into a segmented pill control with Lucide icons and live count badges.
+  - **Candidate Intelligence & Audit Console (`frontend/src/components/bot/BotSessionsTable.tsx`)**:
+    - Reorganized from stacked endless tables into a clean dual-mode CRM console with dedicated sub-tabs: "Candidate Directory" and "Exam Sessions Audit".
+    - Added instant client-side search (by candidate name, username, Telegram ID, session #, or subject category) and status filters (`All`, `VIP Only`, `Standard`, `Blocked` for candidates; `All`, `Completed`, `In Progress`, `Timed Out` for sessions).
+    - Added candidate aggregate telemetry tiles (Total Enrolled, VIP Exempt Accounts, Blocked Accounts; Total Sessions, Completed Sessions, Average Accuracy %).
+    - Integrated clean avatars, score progress breakdowns, VIP quota exemption toggles, and instant account block/unblock moderation controls.
+  - **Quota & Rate Limiting Center (`frontend/src/components/bot/BotLimitsForm.tsx`)**:
+    - Structured into clear operational sections: Master Attempt Policy switch, Interval Windows (Hourly, Daily, Weekly, Monthly, Custom Rolling Interval), Attempt/Question caps, and attempt cooldown pacing.
+    - Added a live Telegram Message Simulator previewing exact candidate notification formatting with dynamic replacement of `{time_remaining}` and `{max_exams}`.
+  - **API & Webhook Telemetry Station (`frontend/src/components/bot/BotWebhookForm.tsx`)**:
+    - Structured BotFather credential management with show/hide password toggle and 1-click public webhook URL copy helper.
+    - Added a Live Telemetry Card displaying Telegram's `getWebhookInfo` status, pending update queue count, SSL certificate verification, max connections, and error diagnostics.
+  - **Campaigns & Growth Suite (`frontend/src/components/bot/BotPromotionsList.tsx`)**:
+    - Added aggregate KPI cards (Active Campaigns, Total Impressions, Total Link Clicks, Global Average CTR %).
+    - Added instant search and status filtering (`All`, `Active`, `Paused`), alongside live Telegram inline button preview cards.
+  - **Quota Engine, Dynamic Cooldown, and Variable Substitution**:
+    - Implemented `TelegramEngine.format_time_remaining(seconds)`: formats remaining time with second-level precision (e.g. `1m 45s`, `45 seconds`, `2h 15m`).
+    - Added dynamic replacement for `{time_remaining}` and `{max_exams}` across cooldown alerts, exam quota exceeded notices, and question quota limits in both custom templates (`limit_reached_message`) and default notifications.
+    - Enhanced Mandatory Cooldown: candidates attempting an exam during cooldown receive dynamic seconds-accurate countdown alerts and are blocked until cooldown expires.
+    - Integrated native Telegram Quiz Poll `open_period` (5-600s) mapped directly from `node.timer_seconds` to display Telegram's animated circular countdown timer on questions.
+    - Added global fallback for negative marking (`setting.default_negative_marking` when `node.negative_marking_rate` is not set) and accurate score deduction across both Telegram poll answers and fallback inline buttons.
+    - Extended difficulty options to include `expert` across flow node presets and the two-step wizard.
+  - **Permanent Chat Preservation of Exam Results & Explanations**:
+    - Cleared `user.last_message_id = None` on exam completion so `/start` and disposable menu cleanups never wipe out candidate exam scorecards.
+    - Updated `start_nav` to detect if the callback originates from a completed exam scorecard or an explanation message; leaves the results intact in chat and delivers the Main Menu as a new message.
+    - Replaced `build_explanations_review` with chunk-safe `build_explanation_messages`: formats all questions, candidate answers, correct answers, explanations, and points into messages under 3400 characters (preventing Telegram `MESSAGE_TOO_LONG` errors).
+    - Updated `rev:` handler to post explanations as permanent messages in the chat history rather than overwriting the scorecard, ensuring both the scorecard and full explanations are permanently saved in the chat history.
+  - **Category-Specific Promotional Campaigns**:
+    - Fixed campaign visibility for category promotions by enhancing `TelegramEngine.get_active_promotion` to support hierarchical taxonomy inheritance (checking direct category and ancestor parent categories) and matching `trigger_event == "category_specific"` or `trigger_event == trigger_event`.
+    - Integrated promotional announcements and dynamic inline action buttons across all category touchpoints: `build_category_hierarchy_keyboard` (category browsing), `ex_init` (Step 1 Question Quantity selection), and `complete_exam` (exam scorecard).
+  - **High-Performance In-Memory Quota & Cooldown Engine**:
+    - Eliminated database query bottlenecks and resolved the rolling window 1-second reset bug by implementing `TelegramEngine.calculate_quota_window`: mathematically calculates exact calendar and rolling boundaries for hourly, daily, weekly, monthly, and custom intervals.
+    - Added `last_exam_at`, `quota_window_start`, and `exams_in_quota_window` directly to `TelegramUser` model, synced non-destructively to PostgreSQL.
+    - Achieved $O(1)$ zero-query quota evaluations on candidate interactions, running entirely in-memory with automatic window roll-over.
+    - Fully accounted for uncompleted exams: timestamps are recorded on exam start (`session.started_at`), while completed exams update to `session.completed_at`. Cooldown and quota window timers accurately count from the candidate's last session whether completed, abandoned, or in-progress.
+  - **Exam Completion & Scorecard Delivery Fix**:
+    - Fixed a bug in `TelegramEngine.complete_exam` where references to `now` and `setting` caused a runtime `NameError`, which silently rolled back the final answer transaction in `process_telegram_update_background`.
+    - Defined `now = utc_now()` and properly referenced `setting_obj` so the final question completion, score calculation, scorecard delivery, and chat preservation succeed reliably.
+    - Added traceback printing in `process_telegram_update_background` so any unexpected background webhook errors are immediately surfaced.
+  - **Option-Wise Explanations & Native Telegram Quiz Engine**:
+    - Compared delivery mechanisms: PDF/TXT document generation vs. Telegram native quiz explanation parameter. Determined that native quiz explanations consume 0% server CPU, 0 MB server RAM, 0 disk I/O, and 0 extra Telegram API calls, rendering client-side via Telegram's native lightbulb (💡) popup banner, whereas PDF generation causes severe CPU and memory bottlenecks under high concurrency.
+    - Enhanced `TelegramEngine.send_exam_question_poll`: intelligently populates Telegram's native `explanation` parameter (up to 200 characters) by prioritizing question explanations, falling back to correct option explanations, or synthesizing option-wise notes (`A: ..., B: ...`).
+    - Enhanced `TelegramApiClient.send_poll`: delivers clean text explanation payloads without forcing restrictive HTML entity parsing, completely preventing 400 Bad Request entity parse failures on mathematical or chemical symbols (`<`, `>`, `&`).
+    - Enhanced `TelegramEngine.build_explanation_messages`: formats full option-by-option breakdowns with individual option explanations (`opt.explanation`), marking candidate selection, correct choices, and general question explanations in permanent in-chat review messages.
+    - Updated `get_session_detail` in `backend/app/api/v1/telegram.py` with fallback to option-level explanations.
+    - **Limit Reached Promotional Message Delivery Fix**:
+    - Resolved an issue where limit reached promotional buttons were displayed but the accompanying announcement text (`promo.title` and `promo.content_text`) was omitted from candidate chats.
+    - Implemented `TelegramEngine.build_limit_reached_response`: dynamically renders promotion title, body, and quota variables (`{candidate_name}`, `{remaining_exams}`, `{cooldown_remaining}`, `{quota_reset_in}`, `{max_exams}`) separated by a clean divider line under the quota alert.
+    - Integrated across all candidate exam start touchpoints: `start_exam` flow node action, `ex_init`, `ex_cnt`/`ex_cfg`, and `ex_diff`/`ex_sub`.
+  - **Limits Check Flow Node (`limits_check`)**:
+    - Added a dedicated `limits_check` action behavior type to `BotFlowNode` and conversational flow engine.
+    - Supported in frontend `FlowNodeModal.tsx` with a `Gauge` icon, dynamic 6-column selector, and template helper guidance.
+    - Added dedicated visual action badge in `BotFlowTree.tsx` (`rose-500/10` with `Gauge` icon).
+    - In `TelegramEngine.execute_node_action`, dynamically calculates and delivers live candidate quota metrics (Remaining Exams of Max, Attempt Cooldown, Quota Window Reset, Account Tier).
+    - Supports custom administrator message templates via `node.content_text` with automatic variable injection (`{remaining_exams}`, `{max_exams}`, `{cooldown_remaining}`, `{quota_reset_in}`, `{candidate_name}`) or default status card.
+    - Attaches limit-reached / start promotions and preserves submenu navigation or Back/Main Menu buttons.
+    - Added automatic fallback routing for `/limits` and `/quota` bot commands to the configured `limits_check` flow node.
+    - Created and activated root flow node ID `37` (`Check Exam Limits`, trigger: `/limits`, row: 3) in PostgreSQL, making it immediately visible on candidate start menus.
+  - **Modular Telegram Bot Administration Architecture**:
+    - Decomposed the monolithic `/admin/bot` studio into 5 dedicated, clean, human-designed Next.js pages matching the layout and minimalism of `/admin/categories` and `/admin/questions`.
+    - Created reusable `BotPageHeader.tsx` with minimal breadcrumb trail, single-sentence human description, live connection chip, and horizontal sub-navigation pill strip.
+    - Updated `AdminSidebar.tsx` to make "Telegram Bot" an expandable accordion menu with direct links to Flow Builder (`/admin/bot`), Limits & Quotas (`/admin/bot/limits`), Campaigns & Ads (`/admin/bot/campaigns`), Candidates & Audits (`/admin/bot/candidates`), and Webhook & API (`/admin/bot/webhook`).
+  - **Telegram Bot UI Minimalism & Clean Human-Built Architecture**:
+    - Stripped all AI-generated instruction texts, verbose subtitles, and explanatory paragraphs across the Telegram Bot administration suite to match the clean, human design of `/admin/categories` and `/admin/questions`.
+    - Made `BotPageHeader.tsx` description optional and removed verbose subtitles from all 5 bot pages (`/admin/bot`, `/admin/bot/limits`, `/admin/bot/campaigns`, `/admin/bot/candidates`, `/admin/bot/webhook`).
+    - Removed dark mockup live preview cards (`COOLDOWN TELEGRAM LIVE PREVIEW` and `QUOTA WINDOW TELEGRAM LIVE PREVIEW`) and instructional tooltip clutter from `BotLimitsForm.tsx`.
+    - Cleaned `BotWebhookForm.tsx`: removed redundant duplicate top stat cards, verbose telemetry sub-captions (`Current registration data as reported by...`, `(Healthy, no backlog)`), and token helper text.
+    - Cleaned `PromotionModal.tsx` and `FlowNodeModal.tsx`: replaced artificial placeholders (`Use <b>bold</b>, <i>italic</i>...`) with concise standard placeholders, and stripped instruction banners.
+    - Removed duplicate stat cards from `BotPromotionsList.tsx`.
+  - **Webhook Registration Payload & Error Serialization Fix**:
+    - Resolved the `422 Unprocessable Content` error when clicking "Register Webhook": updated [app/admin/bot/webhook/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/webhook/page.tsx) to pass `{ webhook_url: settings.webhook_url.trim() }` in `api.post("/telegram/set-webhook")`.
+    - Made `webhook_url` optional in [backend/app/schemas/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/schemas/telegram.py) `WebhookSetRequest` and updated [backend/app/api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) `set_telegram_webhook` to safely fall back to the stored database URL when payload URL is omitted.
+    - Eliminated `[object Object]` toast errors across the entire application by enhancing [frontend/src/lib/api.ts](file:///d:/Task/web/project/bob/exam/frontend/src/lib/api.ts) to parse FastAPI validation error arrays (`detail`) into clean human-readable error messages and safeguarding [frontend/src/components/feedback/Toast.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/feedback/Toast.tsx).
+  - **Global Skeleton System Consolidation**:
+    - Centralized all loading skeletons inside [components/ui/Skeleton.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/ui/Skeleton.tsx) (`Skeleton`, `TableSkeleton`, `CardGridSkeleton`, `FormSkeleton`, `ListSkeleton`) to eliminate heavy, scattered custom skeleton files per feature.
+    - Updated [BotWebhookForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotWebhookForm.tsx) and [BotLimitsForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotLimitsForm.tsx) to use `FormSkeleton`.
+    - Updated [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx) to use `TableSkeleton`.
+    - Updated [BotPromotionsList.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotPromotionsList.tsx) to use `CardGridSkeleton`.
+    - Updated [BotFlowTree.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotFlowTree.tsx) to use `ListSkeleton`.
+  - **UI Decluttering & Redundancy Removal**:
+    - Removed breadcrumb trail from [BotPageHeader.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotPageHeader.tsx), placing direct focus on page titles and live connection status chips.
+    - Removed redundant horizontal tabs strip from [BotPageHeader.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotPageHeader.tsx).
+    - Removed "Quick Flow" action button and completely deleted `QuickFlowModal.tsx` from the codebase, leaving "Add Root Action" as the single clear action.
+    - Removed unused `onQuickFlow` and `onClearAll` handler bindings and props from [BotFlowTree.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotFlowTree.tsx) and [app/admin/bot/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/page.tsx).
+    - Removed duplicate row of stat cards from [BotFlowTree.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotFlowTree.tsx) (`Total Flow Actions`, `Root Level Menus`, `Direct Exam Launchers`), preserving the primary summary metrics on [app/admin/bot/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/page.tsx).
+  - **Telegram Group/Supergroup/Channel Rejection Guard**:
+    - Implemented a code-level guard in [backend/app/services/telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py) to make the bot completely unavailable for groups, supergroups, and broadcast channels.
+    - Added `leave_chat` method in `TelegramApiClient` to call Telegram's `leaveChat` API.
+    - Included `my_chat_member` in webhook allowed updates so group additions trigger automatic departure.
+    - If any incoming update originates from a non-private chat (`chat.type in ["group", "supergroup", "channel"]`), the bot automatically leaves the chat via `leave_chat`, alerts any callback queries that the bot is strictly private, and terminates processing with zero user or exam state creation.
+  - **Telegram Bot Mandatory Subscription & Community Group Access Control**:
+    - Added database fields to `BotSetting` (`backend/app/models/telegram.py`): `force_join_enabled`, `force_join_channels` (JSON string array of channel items), `force_join_message`, `group_access_mode` (`private_only`, `all_groups`, `allowed_only`), and `allowed_group_ids`.
+    - Added corresponding schema validation in `backend/app/schemas/telegram.py` (`BotSettingResponse` & `BotSettingUpdate`).
+    - Implemented `TelegramApiClient.get_chat_member` in `backend/app/services/telegram_engine.py` to check membership via Telegram's `getChatMember` API (`creator`, `administrator`, `member`, `restricted`).
+    - Added `check_force_join_membership` and `build_force_join_card` in `TelegramEngine`: candidates must join all configured channels/groups before accessing bot commands, menus, or exams. Telegram inline keyboard renders channel join URL buttons and a "🔄 Check & Verify Membership" callback button (`verify_membership`).
+    - Group access control supports `private_only` (leaves all non-private chats), `all_groups` (unrestricted), and `allowed_only` (checks group/supergroup/channel ID against admin-whitelisted `allowed_group_ids` and calls `leave_chat` on unauthorized groups).
+    - Created reusable `BotCommunityForm.tsx` (`frontend/src/components/bot/BotCommunityForm.tsx`) with dynamic channel/group adder, customizable lock message, group access mode radio selectors, and allowed group IDs manager.
+    - Created dedicated admin page `/admin/bot/community` (`frontend/src/app/admin/bot/community/page.tsx`) with summary metrics and real-time settings persistence.
+  - **Telegram Bot Settings Serialization & DB Column Backfill**:
+    - Resolved `ResponseValidationError` on `GET /api/v1/telegram/settings` caused by newly introduced columns (`force_join_enabled`, `group_access_mode`) being `NULL` in pre-existing PostgreSQL rows.
+    - Added `@field_validator(..., mode="before")` handlers in [schemas/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/schemas/telegram.py) `BotSettingResponse` to convert `None` inputs to safe defaults (`False` and `"all_blocked"`).
+    - Added automatic self-healing logic in [api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) (`get_bot_settings`) and non-destructive DB schema synchronization in [db/session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to permanently backfill existing PostgreSQL records.
+  - **Group Command DM Redirection & Promotional Broadcast Messaging**:
+    - Added `group_commands_in_private` and `group_redirect_message` to `BotSetting` ([models/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/models/telegram.py), [schemas/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/schemas/telegram.py)).
+    - In [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py), commands (`/...`) executed in authorized groups are intercepted and answered with a polite redirection message containing a 1-click button to open private chat (`https://t.me/<bot_username>?start=from_group`), protecting privacy and keeping groups clutter-free.
+    - Added `send_photo` method to `TelegramApiClient` and built `TelegramEngine.dispatch_broadcast` for rate-limited (50ms interval) promotional push messaging.
+    - Added `POST /api/v1/telegram/broadcast` endpoint ([api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py)) allowing admins to dispatch broadcasts to All Candidates, VIPs Only, Selected Candidates, Allowed Groups/Channels, or Custom chat IDs.
+    - Enhanced [BroadcastModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BroadcastModal.tsx) with a "Selected Candidates" target mode featuring live candidate search, bulk select/deselect, and checkbox list.
+    - Integrated candidate selection into [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx) and [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) with table row checkboxes, "Message Selected (X)" toolbar button, and per-row quick message icon actions.
+    - Added a "Send Broadcast" action button to [campaigns/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/campaigns/page.tsx) and updated [BotCommunityForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotCommunityForm.tsx) with toggle and customizable group redirection message.
+  - **BroadcastModal Candidate Fetching & Limit Fix**:
+    - Resolved infinite loading request loop on candidate selection in [BroadcastModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BroadcastModal.tsx) by adding a `candidatesFetched` completion flag.
+    - Updated [api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) (`GET /telegram/users`) to allow `limit` and `page_size` queries up to 500 (resolving 422 Unprocessable Entity error when requesting page batches).
+  - **Global iOS StatCard Widget System & Responsive Light/Dark Theme Integration**:
+    - Created universal `StatCard` and `StatCardProps` in `@/components/ui/Card.tsx` following the exact iOS squircle widget aesthetic (deep rounded corners `rounded-[22px]`, crisp backdrop blur, dark surface background `dark:bg-[#10141d]/90`, high-contrast bold values, and tinted rounded-2xl icon badges).
+    - Deployed `StatCard` across all bot administration pages and components without code duplication:
+      - `/admin/bot` (Flow Builder: Total Flow Actions, Root Level Menus, Direct Exam Launchers).
+      - `/admin/bot/campaigns` (Promotional Campaigns: Active Campaigns, Total Impressions, Link Clicks, Average CTR).
+      - `/admin/bot/candidates` (Candidates & Audits: Enrolled Candidates, VIP Accounts, Blocked Accounts, Exam Sessions).
+      - `/admin/bot/community` (Access & Community: Mandatory Join, Required Communities, Group Policy, Authorized Groups).
+      - `/admin/bot/limits` (Limits & Quotas: Attempt Policy, Quota Reset Window, Attempt Cooldown).
+      - `/admin/bot/webhook` (Webhook & Diagnostics: Bot Identity, Webhook State, Pending Updates).
+      - `BotSessionsTable.tsx` (Candidate Directory and Exam Sessions Audit stats).
+  - **Executive Operations Dashboard Redesign (Zero Personal Info)**:
+    - Redesigned [frontend/src/app/admin/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/page.tsx) into a high-level **Operations Overview Hub**, completely removing all personal telemetry (admin email, session token IDs, IP addresses, browser strings, device user agents).
+    - Added top iOS `StatCard` widgets for Question Bank total, Categories & Topics, Enrolled Candidates, and Completed Exams.
+    - Integrated 3 core workspace control cards (Taxonomy & Question Bank, Telegram Bot Studio, Growth & Broadcasts) with one-click quick actions (`Bulk Entry`, `New Question`, `View Bank`, `Flow Builder`, `Send Broadcast`).
+    - Added a live **Recent Examination Sessions** audit table with candidate names, subject topics, accuracy progress bars, status badges, and instant scorecard modal inspection (`BotSessionDetailModal`).
+  - **Scorecard Detail Telemetry & React Portal Modal Resolution**:
+    - Resolved the `HTTP 500 Internal Server Error` on `GET /api/v1/telegram/sessions/{id}` caused by Pydantic v2 `model_validate` attempting lazy-loaded access on unawaited SQLAlchemy relationship properties (`session.answers`).
+    - Explicitly constructed `ExamSessionDetailResponse` with loaded `ans_output` items in [backend/app/api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py).
+    - Updated [BotSessionDetailModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionDetailModal.tsx) and [types.ts](file:///d:/Task/web/project/bob/exam/frontend/src/lib/types.ts) to display full question text, candidate selections, correct answers, awarded points, and option explanations.
+    - Updated [Modal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/ui/Modal.tsx) to mount directly to `document.body` via `createPortal`, breaking out of parent CSS transform/contain stacking contexts and ensuring modals are always perfectly centered without getting clipped or hidden when pages scroll.
+    - Connected the "Audit Scorecard" action in [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx) (`Exam Sessions Audit` tab) and [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) to launch the scorecard inspection modal directly with full question-by-question telemetry.
+  - **Administrator & Staff User Management Module (`/admin/users`)**:
+    - Built comprehensive Administrator CRUD and RBAC management module at `/admin/users` ([frontend/src/app/admin/users/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/users/page.tsx)) and [AdminModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/admins/AdminModal.tsx).
+    - Top executive KPI `StatCard` widgets: Total Administrators, Master Admins, Scoped Staff, and Active Accounts.
+    - Search and filter bar by name, email, role (`Administration`, `Admin`), and status (`active`, `suspended`).
+    - Full data table displaying avatar initials, name, email, role badge, status badge with instant lock/unlock toggle, assigned permissions summary, last active timestamp, last login IP, and failed login attempts.
+    - [AdminModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/admins/AdminModal.tsx) modal supporting both administrator creation and updating:
+      - Full name, email address, role selector (`Administration` vs. `Admin`), status selector (`Active` vs. `Suspended`), and password input with min 8 characters requirement (optional on update).
+      - Granular system permission checkboxes with "Select All" / "Clear" buttons and live descriptions from backend `GET /api/v1/admins/permissions/all`.
+      - Visual banner highlighting that `Administration` master accounts bypass all permission checks.
+  - **Administrator Management Refinements & Self-Edit Role Guard**:
+    - Stripped all instructions, explanatory banners, verbose captions, and comments across `/admin/users` and `AdminModal.tsx` for an uncluttered, modern interface.
+    - Implemented self-edit role & status lock:
+      - Frontend: When an administrator edits their own account (`initialAdmin.id === currentAdmin.id`), the Role and Status dropdown selectors are locked/disabled, preventing accidental or unauthorized self-demotion or self-suspension.
+      - Backend: Added validation guard in `PUT /api/v1/admins/{admin_id}` to reject any attempt by an administrator to change their own role (`HTTP 400: You cannot change your own role`) or their own account status.
+    - Fixed icon stacking in [components/ui/Input.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/ui/Input.tsx) and [Select.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/ui/Select.tsx) by adding `z-10` to icon wrappers, preventing background and backdrop-blur layers from obscuring input icons.
+    - Centralized and separated environment configurations:
+      - Backend: Created structured `.env` and `.env.example` in `backend/` managing `PROJECT_NAME`, `API_V1_STR`, `SECRET_KEY`, `DATABASE_URL`, default administrator credentials, session lifetime, brute-force policies, and CORS origins.
+      - Frontend: Created structured `.env.local` and `.env.example` in `frontend/` managing `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_APP_NAME`.
+      - Configured `.gitignore` at root, backend, and frontend levels to safeguard sensitive credentials.
+    - Control Panel Root Redirect:
+      - Removed the public landing page in [frontend/src/app/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/page.tsx) and configured Next.js server-side redirect (`redirect("/admin")`) and `redirects()` in [frontend/next.config.ts](file:///d:/Task/web/project/bob/exam/frontend/next.config.ts) from `/` to `/admin`.
+    - Dashboard Total Questions Fix:
+      - Fixed question count extraction on [frontend/src/app/admin/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/page.tsx) to read from `qRes?.meta?.total_count` (returned by backend `PaginatedResponse`) instead of `qRes?.total`.
+    - Broadcast / SMS Studio UI Overhaul (`/admin/bot/broadcast`):
+      - Upgraded [frontend/src/app/admin/bot/broadcast/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/broadcast/page.tsx) with 4 top iOS `StatCard` KPI widgets (Total Audience, VIP Candidates, Target Groups, Dispatcher Queue).
+      - Redesigned [BroadcastForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BroadcastForm.tsx) into an organized two-column command layout:
+        - Left column: Audience segment picker (6 pill buttons with active ring and icons), dynamic candidate multi-selector with search, onboarding survey criteria selector, and full message composer (text, banner image URL, and inline CTA button).
+        - Right column (sticky): Authentic live Telegram Client Message Simulator previewing bot avatar, banner media, formatted text, inline URL action button, delivery timestamp, and dispatch button.
+      - Removed triple-nested container padding and clutter.
+    - Verified clean TypeScript build (`tsc --noEmit` code 0) and zero comments policy.
+  - **Candidate Onboarding Human-Readable Resolution (`/admin/bot/candidates`)**:
+    - Created universal modular onboarding resolver utility in [frontend/src/lib/onboarding.ts](file:///d:/Task/web/project/bob/exam/frontend/src/lib/onboarding.ts) conforming to the Universal Reusability Doctrine.
+    - Resolves raw generated option IDs (e.g. `pzd8bk7 > 5h7fra6`) into human-readable question & option labels (e.g. `HSC > Admission`) dynamically by traversing the bot's hierarchical `onboarding_config` tree.
+    - Handles nested tree steps at arbitrary depths, JSON dictionary formats (`{ [step_id]: value }`), JSON arrays, and delimited path strings with graceful fallback to raw values if unmapped.
+    - Updated [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx) Candidate Directory to render sleek executive badges with hover tooltips displaying the resolved onboarding path under candidate usernames.
+    - Integrated candidate search with the resolved onboarding labels so searching for "HSC", "Admission", or other track names immediately filters and highlights matching candidates.
+    - Enhanced candidate filter check to support both key-matched and value-matched onboarding criteria.
+    - Updated [BroadcastForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BroadcastForm.tsx) to resolve and display onboarding track pills in the broadcast candidate selector and search query.
+  - **Database-Level Candidate & Onboarding Filtering (`/admin/bot/candidates`)**:
+    - Shifted candidate filtering from client-side array processing to direct PostgreSQL database-level SQL queries.
+    - Updated `GET /api/v1/telegram/users` in [backend/app/api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) to accept `onboarding_filters`, `user_role`, and `search` query parameters with SQL-level `WHERE` clauses matching `TelegramUser.profile_data` via exact and multi-space JSON formatting.
+    - Added database-level role filters (`all`, `vip`, `standard`, `blocked`) and multi-column search across `first_name`, `last_name`, `username`, `profile_data`, and numeric `telegram_id`.
+    - Updated [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) and [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx) to dispatch debounced database query requests upon changing onboarding dropdowns, role toggles, or search keywords.
+  - **Tree-Structured Onboarding Filter Bar & Infinite Loop Resolution (`/admin/bot/candidates`)**:
+    - Re-engineered [OnboardingFilterBar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/OnboardingFilterBar.tsx) to follow a dynamic cascading tree structure:
+      - Only root onboarding questions (e.g. `Select You Batch`) are initially rendered.
+      - When an onboarding option is chosen (e.g. `HSC`), its specific child step (`Select Current Phase`) dynamically appears linked by breadcrumb chevron indicators (`>`).
+      - If a parent selection is changed or cleared, descendant child step filters are automatically pruned from active criteria.
+    - Resolved the infinite HTTP request loop on the Candidates Directory by stabilizing `fetchUsers` and `activeFilters` dependencies via `useRef` in [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) and guarding filter dispatch triggers with change keys in [BotSessionsTable.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionsTable.tsx).
+  - **Dedicated Routes & Pagination for Candidates and Exam Sessions**:
+    - Separated candidate directory and exam sessions audit into distinct URL routes:
+      - `/admin/bot/candidates` ([candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx)): Dedicated Candidate Directory with top KPI widgets, cascading tree onboarding filters, role filter toggles, debounced search, batch message actions, and server-side pagination.
+      - `/admin/bot/sessions` ([sessions/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/sessions/page.tsx)): Dedicated Exam Sessions Audit page with session status filters, search, live accuracy telemetry, scorecard inspection modal, and server-side pagination.
+    - Updated [Pagination.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/ui/Pagination.tsx) with a customizable `itemLabel` prop (e.g. `"candidates"`, `"sessions"`, `"questions"`), supporting both classic page number navigation and infinite stream scroll mode.
+    - Enhanced [backend/app/api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) `GET /telegram/sessions` to support search by candidate name, username, telegram ID, and session ID.
+    - Updated [AdminSidebar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/layout/AdminSidebar.tsx) and [Navbar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/layout/Navbar.tsx) with separate navigation links and titles for `Candidates` and `Exam Sessions`.
+    - Added clean sub-navigation pills on both pages for seamless one-click toggling between Candidate Directory and Exam Sessions Audit.
+    - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation, and zero comments policy.
+  - **Bot Users Terminology Refactoring & Sessions Cards Telemetry Fix**:
+    - Rebranded "Candidates" terminology across the UI, navigation, and schemas to "Bot Users" / "Users" (e.g. `Bot Users` in [AdminSidebar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/layout/AdminSidebar.tsx) and [Navbar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/layout/Navbar.tsx), `Total Users`, `User Directory`, `itemLabel="users"`, and created `/admin/bot/users` route alias).
+    - Removed the redundant in-page sub-navigation tab switcher container from both `/admin/bot/candidates` and `/admin/bot/sessions`, moving the `Refresh Users` button up to the header action bar alongside `Send Message`.
+    - Identified and resolved the root cause for empty / zeroed out Sessions StatCards on `/admin/bot/sessions`:
+      - Previously, `list_exam_sessions` restricted `limit` and `page_size` to `le=100` in FastAPI. Calling `api.get("/telegram/sessions?page=1&limit=500")` triggered an HTTP 422 validation error, silently leaving stats at zero.
+      - Added high-performance dedicated backend endpoint `GET /api/v1/telegram/sessions/stats` in [backend/app/api/v1/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) calculating `total_sessions`, `completed_sessions`, `in_progress_sessions`, and `average_accuracy` directly with PostgreSQL SQL aggregate functions (`func.count()`, `func.avg()`).
+      - Increased `page_size` and `limit` upper bound to `le=500` in `list_exam_sessions`.
+      - Corrected numeric search condition to filter by `TelegramUser.telegram_id` instead of invalid `ExamSession.telegram_id`.
+      - Added `telegram_id` to `ExamSessionResponse` and `ExamSessionDetailResponse` schemas and populated it from the user relationship.
+      - Updated `fetchOverallStats` in [sessions/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/sessions/page.tsx) and [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) to query the dedicated `/telegram/sessions/stats` endpoint.
+    - Verified clean TypeScript build (`tsc --noEmit` code 0), successful backend endpoint execution tests, and strict zero-comments policy.
+  - **Full Codebase Audit & Frontend Unused Code Purge**:
+    - Audited the entire frontend source tree with strict compiler flags (`tsc --noEmit --noUnusedLocals --noUnusedParameters`).
+    - Cleaned all unused imports, dead variables, and obsolete declarations across:
+      - [sessions/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/sessions/page.tsx): Removed unused `useMemo`.
+      - [categories/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/categories/page.tsx): Removed unused `Card`, `ChevronsUpDown`, and `moveTargetOptions`.
+      - [questions/bulk/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/questions/bulk/page.tsx): Removed unused `Layers`.
+      - [questions/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/questions/page.tsx): Removed unused `Select`, `Checkbox`, `DifficultyBadge`, `CheckCircle2`, `Trash2`, `Edit2`, `Sparkles`, `Folder`, `ChevronsUpDown`, `FlattenedOption` interface, and `hierarchicalCategoryOptions`.
+      - [BotCommunityForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotCommunityForm.tsx): Removed unused `ShieldCheck`, `MessageSquare`.
+      - [BotOnboardingForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotOnboardingForm.tsx): Wired `onDeleteStep` to question header delete action.
+      - [BotSessionDetailModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotSessionDetailModal.tsx): Removed unused `Award`, `HelpCircle`, `MinusCircle`.
+      - [FlowNodeModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/FlowNodeModal.tsx): Removed unused `LayoutGrid`.
+      - [QuestionForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/questions/QuestionForm.tsx): Removed unused `useRef`, icons (`FolderTree`, `Search`, `ChevronRight`, `ChevronDown`, `Folder`, `Layers`, `Sparkles`, `AlertCircle`, `ChevronsUpDown`), and unread `categoriesLoading` state.
+      - [AuthContext.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/context/AuthContext.tsx): Removed unused `usePathname` import and declaration.
+    - Purged 5 default starter boilerplate SVG files from `frontend/public/` (`file.svg`, `globe.svg`, `next.svg`, `vercel.svg`, `window.svg`), retaining exclusively `bob-logo.svg`.
+  - **Bot Onboarding Tree Rendering & Multi-Root Question Support (`/admin/bot/onboarding`)**:
+    - Identified and resolved the root cause for the onboarding configuration not displaying (rendering "Create First Question" empty placeholder instead of the active onboarding tree):
+      - In PostgreSQL `telegram_bot_settings.onboarding_config`, configuration is stored as a JSON object `{"steps": [...]}`.
+      - Previously, `BotOnboardingForm.tsx` parsed `onboarding_config` using strict `Array.isArray(parsed)` which returned false for JSON objects with a `.steps` array, falling back to `setSteps([])`.
+      - Updated `useEffect` in [BotOnboardingForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotOnboardingForm.tsx) to accept both raw array structures and `{ steps: [...] }` object dictionaries (`Array.isArray(parsed) ? parsed : (parsed?.steps || [])`).
+      - Upgraded the tree rendering from single-step (`steps[0]`) to full multi-root support (`steps.map(...)` with "+ Add Root Question" button and question delete controls).
+    - Fixed Next.js build type cache by adding re-export in [candidates/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/candidates/page.tsx) pointing to `users/page.tsx`.
+  - **Onboarding Selective Smart Locking, Inactive Grouping & Last-Word Slug ID Generation**:
+    - **Selective User-Linked Smart Locking (`GET /api/v1/telegram/onboarding/usage`)**:
+      - Added endpoint in [telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) inspecting all registered candidate `profile_data` rows in PostgreSQL to aggregate all actively referenced `used_step_ids` and `used_option_values`.
+      - In [BotOnboardingForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotOnboardingForm.tsx), recursively evaluates `isStepLocked(step)` and `isOptionLocked(opt)`:
+        - **Linked Nodes (Locked)**: If a step, option, or descendant branch has candidate profile links, editing (label inputs) and deletion (`Trash2`) are completely disabled and locked with an amber `Lock` badge (`Locked: Linked to Users`).
+        - **Unlinked Nodes (Unlocked)**: Nodes with zero candidate links remain fully editable and can be deleted freely with `Trash2` action buttons.
+    - **Inactive Options Separation**:
+      - Partitioned options in [BotOnboardingForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotOnboardingForm.tsx) into Active Options and a distinct Inactive / Archived Options section with dashed border, count badge, and reactivate button.
+      - Updated [OnboardingFilterBar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/OnboardingFilterBar.tsx) to group inactive options under `<optgroup label="Inactive / Archived">` with `(Inactive)` label.
+      - Updated [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py) to check active options across all root steps during bot onboarding flows.
+    - **Real-Time Slug ID Generation & Tree-Wide Collision Guard**:
+      - Added `updateIdWithSlug` and `collectAllIds` in [BotOnboardingForm.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/bot/BotOnboardingForm.tsx):
+        - Dynamically recalculates the slug prefix in real-time as the admin types any unlinked question or option label (e.g. typing `"Select batch"` updates value to `batch_pm3ocww`, typing `"2025"` updates to `2025_pm3ocww`, typing `"Medical Admission"` updates to `admission_pm3ocww`).
+        - Preserves the stable random suffix during continuous keystrokes.
+    - **Telegram Conversation Log Removal & Database Write Streamlining**:
+      - Purged redundant `TelegramConversationLog` model from [models/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/models/telegram.py) and `TelegramConversationLogResponse` from [schemas/telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/schemas/telegram.py).
+      - Removed unused `GET /api/v1/telegram/users/{user_id}/conversations` route from [telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py).
+      - Eliminated per-click conversation logging overhead across [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py), reducing database I/O and table growth while preserving full exam audit fidelity in `ExamSession` and `ExamAnswer`.
+    - **Dual AWS Lambda & Traditional Server Architecture (Zero Worker Threads)**:
+      - **Zero Background Workers & Threads**:
+        - Replaced `asyncio.to_thread` in [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py) `TelegramApiClient` with direct sync I/O, eliminating background thread pools and worker locks.
+        - Converted webhook handling in [telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) from detached `BackgroundTasks` to direct in-request synchronous processing, ensuring complete execution before Lambda freezing.
+      - **Mangum ASGI Handler**: Exported `handler = Mangum(app)` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) for serverless AWS Lambda execution while retaining standard ASGI support (`uvicorn app.main:app`).
+      - **Serverless-Aware Database Session Management**: Updated [db/session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to automatically detect Lambda environments (`AWS_LAMBDA_FUNCTION_NAME` / `LAMBDA_TASK_ROOT`) and switch to `NullPool` to prevent connection exhaustion, while retaining persistent connection pooling (`pool_pre_ping=True`, `pool_size=10`, `max_overflow=20`, `pool_recycle=300`) for traditional Docker/VPS servers.
+    - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero-comments policy.
+
+# 8. Immediate Next Steps
+- Production webhook flow, Access & Community controls, promotional broadcast engine, direct messaging, modular component-driven UI, onboarding tree manager with real-time slug ID generation and smart locking, clean database schema, AWS Lambda & traditional dual deployment compatibility, and Administrator & RBAC Access Management ready and verified.
+
+

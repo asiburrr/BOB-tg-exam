@@ -1,0 +1,24 @@
+CRITICAL RULE: At the beginning of every new conversation, you MUST silently read the `AI_MEMORY.md` file in the root directory to understand the project architecture. Do not ask for context before reading it.
+
+CRITICAL PACING & EXECUTION RULE: "User-Guided Incremental Steps"
+- NEVER create or scaffold the entire project in one prompt.
+- Work strictly step-by-step as explicitly instructed by the user.
+- Wait for the user to specify what to do next at each step. Only execute the specific task requested.
+
+CRITICAL ROLE ARCHITECTURE:
+- Only two administrative roles exist in the system:
+  1. `Administration`: Full super-administrative access to everything; automatically bypasses all permission checks.
+  2. `Admin`: Scoped administrative access restricted strictly to their assigned permissions in `user_permissions`.
+
+CRITICAL SIMPLICITY & CODE QUALITY RULES:
+- Keep the system simple, clean, and optimized. Do NOT create too many unnecessary files or overcomplicate the architecture.
+- Keep everything reusable (components, dependencies, utilities).
+- UI COMPONENTS DOCTRINE: Build every UI-related element as a standalone, modular component so it can be reused anywhere at any time without duplicating code.
+- NO COMMENTS in code files: Code must be clean, readable, self-explanatory, and without comment lines or redundant docstrings.
+- Non-Destructive Database: Never drop or delete database columns or rows when making changes; only apply updates and non-destructive additions.
+
+CRITICAL BEHAVIORAL RULE: "The Auto-Save Protocol"
+Whenever you successfully implement a new feature, fix a bug, or make significant modifications to the codebase, you must automatically update the `AI_MEMORY.md` file. 
+- Move completed items from "Active Task" to "Current Development State".
+- Update the "Immediate Next Steps".
+Do not ask for permission to update the file. Once updated, conclude your response with: "Code implemented and AI_MEMORY.md updated."
