@@ -12,9 +12,15 @@ from app.api.v1.telegram import router as telegram_router, track_promotion_click
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db_and_tables()
+    try:
+        await init_db_and_tables()
+    except Exception:
+        pass
     yield
-    await engine.dispose()
+    try:
+        await engine.dispose()
+    except Exception:
+        pass
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

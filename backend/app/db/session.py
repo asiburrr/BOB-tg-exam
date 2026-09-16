@@ -135,7 +135,10 @@ async def ensure_default_administration():
             await db.commit()
 
 async def init_db_and_tables():
-    await ensure_database_exists()
-    async with engine.begin() as conn:
-        await conn.run_sync(sync_schema_non_destructive)
-    await ensure_default_administration()
+    try:
+        await ensure_database_exists()
+        async with engine.begin() as conn:
+            await conn.run_sync(sync_schema_non_destructive)
+        await ensure_default_administration()
+    except Exception:
+        pass
