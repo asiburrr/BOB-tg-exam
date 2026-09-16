@@ -1,4 +1,4 @@
-name: Deploy Frontend
+name: Deploy Frontend to AWS Lambda
 
 on:
   push:
@@ -10,28 +10,45 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
-      - name: Install dependencies
-        run: |
-          cd frontend
-          npm ci
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Next.js Application
+      - name: Ensure ECR Repository exists
         run: |
-          cd frontend
-          npm run build
+          aws ecr describe-repositories --repository-names bob-exam-frontend || \
+          aws ecr create-repository --repository-name bob-exam-frontend
+
+      - name: Build and Push Docker Image
         env:
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: bob-exam-frontend
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL="${{ secrets.NEXT_PUBLIC_API_URL }}" \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            frontend
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Update Lambda Function Code
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ secrets.AWS_FRONTEND_LAMBDA_NAME || 'bob-exam-frontend' }} \
+            --image-uri ${{ steps.login-ecr.outputs.registry }}/bob-exam-frontend:${{ github.sha }}
