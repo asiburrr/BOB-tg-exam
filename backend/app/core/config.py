@@ -1,5 +1,6 @@
-import os
+import json
 from typing import List, Union
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -23,6 +24,27 @@ class Settings(BaseSettings):
     ]
     TELEGRAM_BOT_TOKEN: str = ""
     ENABLE_DOCS: bool = True
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            v_clean = v.strip()
+            if not v_clean:
+                return ["*"]
+            if v_clean.startswith("[") and v_clean.endswith("]"):
+                try:
+                    parsed = json.loads(v_clean)
+                    if isinstance(parsed, list):
+                        return [str(i).strip() for i in parsed if str(i).strip()]
+                except Exception:
+                    pass
+                inner = v_clean.strip("[]")
+                return [i.strip().strip("\"'") for i in inner.split(",") if i.strip()]
+            return [i.strip() for i in v_clean.split(",") if i.strip()]
+        elif isinstance(v, (list, tuple, set)):
+            return [str(i).strip() for i in v if str(i).strip()]
+        return ["*"]
 
     class Config:
         env_file = ".env"
