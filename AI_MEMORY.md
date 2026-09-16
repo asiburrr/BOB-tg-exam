@@ -22,7 +22,9 @@ The system defines exactly two administrative roles:
 
 # 4. Universal Reusability & Simplicity Doctrine
 - **Keep it Simple & Optimized**: No over-engineering, no unnecessary files, no complex bloat.
-- **CI/CD Auto-Deployment**: GitHub Actions workflow (`.github/workflows/deploy-backend.yml`) automatically builds and updates the AWS Lambda backend on every push to `main`.
+- **CI/CD Auto-Deployment**: Dedicated GitHub Actions workflows for automated continuous integration & continuous deployment:
+  - `.github/workflows/deploy-backend.yml`: Automatically builds dependencies, packages, and updates the AWS Lambda backend on every push to `main`.
+  - `.github/workflows/deploy-frontend.yml`: Automatically builds, validates, and packages the Next.js frontend with standalone optimization on every push to `main`.
 - **Environment Centralization**: All critical parameters reside in `.env` (including `ENABLE_DOCS` toggle to show/hide Swagger/OpenAPI/Redoc documentation endpoints).
 - **Automatic Startup Lifecycle**: On server startup, the database is created if missing, tables and columns synced non-destructively, and the default Administration account is auto-created only when the `admins` table is empty.
 - **UI Components Doctrine**: Build every UI-related element as a standalone, modular component so it can be reused anywhere at any time without duplicating code.
