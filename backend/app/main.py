@@ -61,14 +61,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-cors_origins = settings.BACKEND_CORS_ORIGINS if isinstance(settings.BACKEND_CORS_ORIGINS, list) and "*" not in settings.BACKEND_CORS_ORIGINS else ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True if "*" not in cors_origins else False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if not is_lambda:
+    cors_origins = settings.BACKEND_CORS_ORIGINS if isinstance(settings.BACKEND_CORS_ORIGINS, list) and "*" not in settings.BACKEND_CORS_ORIGINS else ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True if "*" not in cors_origins else False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(admins_router, prefix=settings.API_V1_STR)

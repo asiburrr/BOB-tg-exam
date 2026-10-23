@@ -564,7 +564,8 @@ The system defines exactly two administrative roles:
           - Elevated layer stack to `z-[9999]` with system `bg-black/60 dark:bg-black/80 backdrop-blur-md` overlay covering 100% of the screen above the sticky navbar and sidebar, resolving clipping under the navigation bar and matching the promotional campaign modal standard.
         - **AWS Lambda Quiz Scheduler Autonomous Operation (Zero Activity)**:
           - Implemented dual-mode execution in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py): traditional servers run the 15-second background loop (`run_quiz_scheduler_worker`), while AWS Lambda intercepts EventBridge / CloudWatch Scheduled Events (`event.get("source") == "aws.events"` or `event.get("detail-type") == "Scheduled Event"`) to execute `TelegramEngine.sync_quiz_schedules(db)` without crashing Mangum.
-          - Added dedicated HTTP cron endpoints (`GET` and `POST` `/api/v1/telegram/quiz-assignments/cron-sync`) with optional `secret` verification in [telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) to enable 1-minute scheduling via external cron triggers (e.g. AWS EventBridge API Destinations, Cloudflare Cron Workers, cron-job.org).
+        - **AWS Lambda Python 3.13 Runtime Dependency Fix**:
+          - Added `greenlet>=3.0.3` and `sqlalchemy[asyncio]>=2.0.30` to [requirements.txt](file:///d:/Task/web/project/bob/exam/backend/requirements.txt) to resolve `Runtime.ImportModuleError: Unable to import module 'app.main': The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed.` during Lambda cold starts.
       - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps
