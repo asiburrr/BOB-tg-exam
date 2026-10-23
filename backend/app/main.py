@@ -1,4 +1,5 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ from app.api.v1.admins import router as admins_router
 from app.api.v1.questions import router as questions_router
 from app.api.v1.telegram import router as telegram_router, track_promotion_click
 
-import asyncio
+is_lambda = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("LAMBDA_TASK_ROOT"))
 
 async def run_quiz_scheduler_worker():
     while True:
@@ -60,15 +61,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-is_lambda = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("LAMBDA_TASK_ROOT"))
-if not is_lambda:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+cors_origins = settings.BACKEND_CORS_ORIGINS if isinstance(settings.BACKEND_CORS_ORIGINS, list) and "*" not in settings.BACKEND_CORS_ORIGINS else ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True if "*" not in cors_origins else False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(admins_router, prefix=settings.API_V1_STR)
@@ -89,6 +89,27 @@ async def health_check():
 
 try:
     from mangum import Mangum
-    handler = Mangum(app, lifespan="auto")
+    mangum_handler = Mangum(app, lifespan="auto")
 except Exception:
-    handler = None
+    mangum_handler = None
+
+async def _execute_scheduled_quiz_sync():
+    from app.db.session import AsyncSessionLocal
+    from app.services.telegram_engine import TelegramEngine
+    async with AsyncSessionLocal() as db:
+        await TelegramEngine.sync_quiz_schedules(db)
+        await db.commit()
+
+def handler(event, context):
+    if isinstance(event, dict) and (
+        event.get("source") == "aws.events"
+        or event.get("detail-type") == "Scheduled Event"
+        or event.get("action") == "sync_quiz_schedules"
+        or event.get("task") == "sync_quiz_schedules"
+    ):
+        asyncio.run(_execute_scheduled_quiz_sync())
+        return {"statusCode": 200, "body": '{"status":"ok","action":"sync_quiz_schedules"}'}
+
+    if mangum_handler:
+        return mangum_handler(event, context)
+    return {"statusCode": 500, "body": '{"status":"error","message":"Handler not configured"}'}

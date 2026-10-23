@@ -1450,3 +1450,18 @@ async def sync_all_quiz_schedules(
     await TelegramEngine.sync_quiz_schedules(db, client, setting)
     await db.commit()
     return ApiResponse(success=True, message="Quiz schedules synchronized successfully")
+
+@router.get("/quiz-assignments/cron-sync", response_model=ApiResponse[Dict[str, Any]])
+@router.post("/quiz-assignments/cron-sync", response_model=ApiResponse[Dict[str, Any]])
+async def cron_sync_quiz_schedules(
+    secret: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if setting and setting.webhook_secret and secret and secret != setting.webhook_secret:
+        return ApiResponse(success=False, message="Invalid secret")
+    client = TelegramApiClient(token=setting.bot_token) if setting and setting.bot_token else None
+    await TelegramEngine.sync_quiz_schedules(db, client, setting)
+    await db.commit()
+    return ApiResponse(success=True, message="Quiz schedules synchronized successfully")
