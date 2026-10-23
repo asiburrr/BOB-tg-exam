@@ -17,11 +17,24 @@ from app.models.telegram import (
     TelegramPromotion,
     ExamSession,
     ExamAnswer,
+    TelegramQuizTarget,
+    TelegramQuiz,
+    TelegramQuizAssignment,
+    TelegramQuizParticipant,
 )
 from app.models.question import QuestionCategory, Question, QuestionOption
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+def to_bd_time(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone(timedelta(hours=6)))
+
+def format_bd_time(dt: datetime) -> str:
+    bd_dt = to_bd_time(dt)
+    return bd_dt.strftime("%d %b %Y, %I:%M %p (BST)")
 
 class TelegramApiClient:
     def __init__(self, token: Optional[str] = None):
@@ -222,7 +235,7 @@ class TelegramApiClient:
 
     async def send_poll(
         self,
-        chat_id: int,
+        chat_id: Any,
         question: str,
         options: List[str],
         correct_option_id: int,
@@ -248,7 +261,13 @@ class TelegramApiClient:
             payload["reply_markup"] = reply_markup
         if open_period and 5 <= open_period <= 600:
             payload["open_period"] = open_period
-        return await self._post("sendPoll", payload)
+        res = await self._post("sendPoll", payload)
+        if not res.get("ok"):
+            err_desc = str(res.get("description", "")).lower()
+            if "non-anonymous" in err_desc or "channel" in err_desc:
+                payload["is_anonymous"] = True
+                res = await self._post("sendPoll", payload)
+        return res
 
     async def answer_callback_query(
         self,
@@ -269,6 +288,9 @@ class TelegramApiClient:
 
     async def get_chat_member(self, chat_id: Any, user_id: int) -> Dict[str, Any]:
         return await self._post("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+
+    async def get_chat(self, chat_id: Any) -> Dict[str, Any]:
+        return await self._post("getChat", {"chat_id": chat_id})
 
     async def set_webhook(self, url: str, secret_token: Optional[str] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -1230,6 +1252,86 @@ class TelegramEngine:
             user.last_active_session_id = None
             await db.flush()
 
+        if session.strategy_used and session.strategy_used.startswith("scheduled_quiz:"):
+            try:
+                asg_id = int(session.strategy_used.split(":")[1])
+                p_res = await db.execute(
+                    select(TelegramQuizParticipant).where(
+                        and_(
+                            TelegramQuizParticipant.assignment_id == asg_id,
+                            TelegramQuizParticipant.exam_session_id == session.id
+                        )
+                    )
+                )
+                p_obj = p_res.scalar_one_or_none()
+                if p_obj:
+                    p_obj.score = session.score
+                    p_obj.correct_count = session.correct_count
+                    p_obj.wrong_count = session.wrong_count
+                    p_obj.skipped_count = session.skipped_count
+                    p_obj.total_time_seconds = max(1, int((now - p_obj.started_at).total_seconds()))
+                    p_obj.status = "completed"
+                    p_obj.completed_at = now
+                    await db.flush()
+
+                asg_res = await db.execute(
+                    select(TelegramQuizAssignment)
+                    .options(selectinload(TelegramQuizAssignment.quiz), selectinload(TelegramQuizAssignment.target))
+                    .where(TelegramQuizAssignment.id == asg_id)
+                )
+                asg_obj = asg_res.scalar_one_or_none()
+                if asg_obj:
+                    cnt_res = await db.execute(
+                        select(func.count(TelegramQuizParticipant.id)).where(
+                            and_(TelegramQuizParticipant.assignment_id == asg_id, TelegramQuizParticipant.status == "completed")
+                        )
+                    )
+                    asg_obj.total_participants = cnt_res.scalar() or 0
+                    await db.flush()
+
+                    mins, secs = divmod(p_obj.total_time_seconds if p_obj else 0, 60)
+                    t_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                    end_str = format_bd_time(asg_obj.end_time)
+                    card = (
+                        f"🏆 Scheduled Quiz Completed!\n\n"
+                        f"Quiz: {asg_obj.quiz.title}\n"
+                        f"Target: {asg_obj.target.title}\n"
+                        f"Final Score: {session.score:.2f} / {session.max_score:.2f} ({session.accuracy_percentage:.1f}%)\n"
+                        f"Correct: {session.correct_count}\n"
+                        f"Incorrect: {session.wrong_count}\n"
+                        f"Skipped: {session.skipped_count}\n"
+                        f"Time Taken: {t_str}\n\n"
+                        f"The leaderboard will be published to {asg_obj.target.title} automatically once the quiz ends at {end_str}."
+                    )
+                    target_icon = "📢" if asg_obj.target.chat_type == "channel" else "👥"
+                    target_url = None
+                    target_chat_str = str(asg_obj.target.chat_id or "").strip()
+                    if target_chat_str.startswith("@"):
+                        target_url = f"https://t.me/{target_chat_str.lstrip('@')}"
+                    elif client:
+                        try:
+                            t_val = int(target_chat_str) if (target_chat_str.startswith("-") and target_chat_str.lstrip("-").isdigit()) or target_chat_str.isdigit() else target_chat_str
+                            c_info = await client.get_chat(t_val)
+                            if c_info.get("ok"):
+                                r_data = c_info.get("result", {})
+                                if r_data.get("username"):
+                                    target_url = f"https://t.me/{r_data['username']}"
+                                elif r_data.get("invite_link"):
+                                    target_url = r_data["invite_link"]
+                        except Exception:
+                            pass
+                    if not target_url and target_chat_str.startswith("-100") and target_chat_str[4:].isdigit():
+                        target_url = f"https://t.me/c/{target_chat_str[4:]}"
+
+                    btn_text = f"{target_icon} {asg_obj.target.title}"
+                    if target_url:
+                        kb = {"inline_keyboard": [[{"text": btn_text, "url": target_url}]]}
+                    else:
+                        kb = {"inline_keyboard": [[{"text": btn_text, "callback_data": "start_nav"}]]}
+                    return card, kb
+            except Exception:
+                pass
+
         cat_name = "General Assessment"
         if session.category_id:
             c_res = await db.execute(select(QuestionCategory.name).where(QuestionCategory.id == session.category_id))
@@ -1687,6 +1789,10 @@ class TelegramEngine:
         setting: BotSetting,
     ) -> None:
         client = TelegramApiClient(token=setting.bot_token)
+        try:
+            await TelegramEngine.sync_quiz_schedules(db, client, setting)
+        except Exception:
+            pass
 
         chat = None
         if "message" in update:
@@ -1706,9 +1812,24 @@ class TelegramEngine:
 
         if chat and chat.get("type") in ["group", "supergroup", "channel"]:
             is_allowed = False
-            if setting.group_access_mode == "allowed_only" and setting.allowed_group_ids:
-                chat_id_str = str(chat.get("id", ""))
-                chat_username = str(chat.get("username", "")).lower().lstrip("@")
+            chat_id_str = str(chat.get("id", ""))
+            chat_username = str(chat.get("username", "")).lower().lstrip("@")
+
+            target_res = await db.execute(
+                select(TelegramQuizTarget).where(
+                    and_(
+                        TelegramQuizTarget.is_active.is_(True),
+                        or_(
+                            TelegramQuizTarget.chat_id == chat_id_str,
+                            TelegramQuizTarget.chat_id == f"@{chat_username}",
+                            TelegramQuizTarget.chat_id == chat_username,
+                        )
+                    )
+                )
+            )
+            if target_res.scalar_one_or_none():
+                is_allowed = True
+            elif setting.group_access_mode == "allowed_only" and setting.allowed_group_ids:
                 allowed_items = [x.strip().lower() for x in setting.allowed_group_ids.replace("\n", ",").split(",") if x.strip()]
                 for item in allowed_items:
                     clean_item = item.lstrip("@")
@@ -1764,6 +1885,12 @@ class TelegramEngine:
             tg_user_info = pa.get("user", {})
             chosen_options = pa.get("option_ids", [])
             selected_opt_idx = chosen_options[0] if chosen_options else None
+
+            asg_handled = await TelegramEngine.handle_quiz_poll_answer(
+                db, client, poll_id, tg_user_info, selected_opt_idx
+            )
+            if asg_handled:
+                return
 
             res = await db.execute(
                 select(ExamSession)
@@ -1837,6 +1964,39 @@ class TelegramEngine:
                     session.current_index += 1
                     await db.flush()
 
+                    if session.strategy_used and session.strategy_used.startswith("scheduled_quiz:"):
+                        try:
+                            s_asg_id = int(session.strategy_used.split(":")[1])
+                            p_res = await db.execute(
+                                select(TelegramQuizParticipant).where(
+                                    and_(
+                                        TelegramQuizParticipant.assignment_id == s_asg_id,
+                                        TelegramQuizParticipant.exam_session_id == session.id
+                                    )
+                                )
+                            )
+                            p_part = p_res.scalar_one_or_none()
+                            if p_part:
+                                asg_obj_res = await db.execute(
+                                    select(TelegramQuizAssignment)
+                                    .options(selectinload(TelegramQuizAssignment.quiz))
+                                    .where(TelegramQuizAssignment.id == s_asg_id)
+                                )
+                                asg_obj = asg_obj_res.scalar_one_or_none()
+                                neg_r = float(asg_obj.quiz.negative_marking_rate) if (asg_obj and asg_obj.quiz and asg_obj.quiz.negative_marking_rate) else 0.00
+                                p_part.score = max(0.00, round(float(session.correct_count) - (float(session.wrong_count) * neg_r), 2))
+                                p_part.correct_count = session.correct_count
+                                p_part.wrong_count = session.wrong_count
+                                p_part.skipped_count = session.skipped_count
+                                now_dt = utc_now()
+                                p_part.total_time_seconds = max(1, int((now_dt - p_part.started_at).total_seconds()))
+                                p_part.completed_at = now_dt
+                                if session.current_index >= len(q_ids):
+                                    p_part.status = "completed"
+                                await db.flush()
+                        except Exception:
+                            pass
+
             await TelegramEngine.send_exam_question_poll(db, client, chat_id, session)
 
         elif "message" in update:
@@ -1849,6 +2009,20 @@ class TelegramEngine:
                     "Your account has been suspended by administration. Access to this bot is restricted."
                 )
                 return
+
+            text = (msg.get("text") or "").strip()
+
+            if text.startswith("/start") and "quiz_" in text:
+                if user.last_message_id and chat_id:
+                    await client.delete_message(chat_id, user.last_message_id)
+                parts = text.split()
+                for p in parts:
+                    if "quiz_" in p:
+                        clean_id_str = p.split("quiz_")[1].split("@")[0].strip()
+                        if clean_id_str.isdigit():
+                            asg_id = int(clean_id_str)
+                            await TelegramEngine.start_scheduled_quiz_flow(db, client, user, asg_id, chat_id)
+                            return
 
             if msg.get("chat", {}).get("type") == "private" and setting.force_join_enabled:
                 is_joined, unjoined = await TelegramEngine.check_force_join_membership(client, user.telegram_id, setting)
@@ -1865,13 +2039,21 @@ class TelegramEngine:
             ):
                 return
 
-            text = (msg.get("text") or "").strip()
-
             if text.startswith("/"):
-                cmd = text.split()[0].lower()
-                if cmd == "/start":
+                cmd_parts = text.split()
+                cmd = cmd_parts[0].lower()
+                cmd_base = cmd.split("@")[0]
+                if cmd_base == "/start":
                     if user.last_message_id and chat_id:
                         await client.delete_message(chat_id, user.last_message_id)
+
+                    if len(cmd_parts) > 1 and cmd_parts[1].startswith("quiz_"):
+                        try:
+                            asg_id = int(cmd_parts[1].replace("quiz_", ""))
+                            await TelegramEngine.start_scheduled_quiz_flow(db, client, user, asg_id, chat_id)
+                            return
+                        except Exception:
+                            pass
 
                     active_sess_res = await db.execute(
                         select(ExamSession)
@@ -2520,3 +2702,608 @@ class TelegramEngine:
             "failed_count": failed_count,
             "message": f"Broadcast delivered to {sent_count} of {len(targets)} recipients."
         }
+
+    @staticmethod
+    async def handle_quiz_poll_answer(
+        db: AsyncSession,
+        client: TelegramApiClient,
+        poll_id: str,
+        tg_user_info: Dict[str, Any],
+        selected_opt_idx: Optional[int],
+    ) -> bool:
+        if not tg_user_info.get("id"):
+            return False
+
+        asg_res = await db.execute(
+            select(TelegramQuizAssignment)
+            .options(
+                selectinload(TelegramQuizAssignment.quiz),
+                selectinload(TelegramQuizAssignment.target)
+            )
+            .where(TelegramQuizAssignment.poll_data.is_not(None))
+            .order_by(desc(TelegramQuizAssignment.id))
+        )
+        asgs_with_polls = asg_res.scalars().all()
+        matched_asg = None
+        matched_poll_item = None
+
+        for asg in asgs_with_polls:
+            if asg.poll_data:
+                try:
+                    p_list = json.loads(asg.poll_data)
+                    for item in p_list:
+                        if str(item.get("poll_id")) == poll_id:
+                            matched_asg = asg
+                            matched_poll_item = item
+                            break
+                except Exception:
+                    pass
+            if matched_asg:
+                break
+
+        if not matched_asg or not matched_poll_item:
+            return False
+
+        user = await TelegramEngine.get_or_create_user(db, tg_user_info)
+        if user.is_blocked:
+            return True
+
+        p_res = await db.execute(
+            select(TelegramQuizParticipant).where(
+                and_(
+                    TelegramQuizParticipant.assignment_id == matched_asg.id,
+                    TelegramQuizParticipant.user_id == user.id
+                )
+            )
+        )
+        participant = p_res.scalar_one_or_none()
+        now_ts = utc_now()
+        now_iso = now_ts.isoformat()
+
+        if not participant:
+            participant = TelegramQuizParticipant(
+                assignment_id=matched_asg.id,
+                user_id=user.id,
+                score=0.00,
+                correct_count=0,
+                wrong_count=0,
+                skipped_count=0,
+                total_time_seconds=1,
+                status="in_progress",
+                started_at=now_ts,
+                completed_at=now_ts,
+                answers_data="{}",
+            )
+            db.add(participant)
+            await db.flush()
+
+        answers_map = {}
+        if participant.answers_data:
+            try:
+                answers_map = json.loads(participant.answers_data)
+            except Exception:
+                answers_map = {}
+
+        corr_idx = matched_poll_item.get("correct_index", 0)
+        is_corr = (selected_opt_idx == corr_idx) if selected_opt_idx is not None else False
+
+        answers_map[poll_id] = {
+            "selected_idx": selected_opt_idx,
+            "correct_idx": corr_idx,
+            "is_correct": is_corr,
+            "answered_at": now_iso,
+        }
+        participant.answers_data = json.dumps(answers_map)
+
+        corr_count = sum(1 for a in answers_map.values() if a.get("is_correct"))
+        wrong_count = sum(1 for a in answers_map.values() if not a.get("is_correct"))
+        neg_rate = float(matched_asg.quiz.negative_marking_rate) if (matched_asg.quiz and matched_asg.quiz.negative_marking_rate) else 0.00
+        net_score = max(0.00, float(corr_count) - float(wrong_count) * neg_rate)
+
+        participant.correct_count = corr_count
+        participant.wrong_count = wrong_count
+        participant.score = round(net_score, 2)
+
+        tap_times = []
+        for a in answers_map.values():
+            if a.get("answered_at"):
+                try:
+                    tap_times.append(datetime.fromisoformat(a["answered_at"]))
+                except Exception:
+                    pass
+
+        if tap_times:
+            first_tap = min(tap_times)
+            last_tap = max(tap_times)
+            participant.started_at = first_tap
+            participant.completed_at = last_tap
+            if len(tap_times) > 1:
+                participant.total_time_seconds = max(1, int((last_tap - first_tap).total_seconds()))
+            else:
+                participant.total_time_seconds = 1
+
+        tot_q = matched_asg.quiz.total_questions if matched_asg.quiz else 1
+        if len(answers_map) >= tot_q:
+            participant.status = "completed"
+
+        cnt_res = await db.execute(
+            select(func.count(func.distinct(TelegramQuizParticipant.user_id)))
+            .where(TelegramQuizParticipant.assignment_id == matched_asg.id)
+        )
+        matched_asg.total_participants = cnt_res.scalar() or 1
+        await db.flush()
+        return True
+
+    @staticmethod
+    async def publish_quiz_announcement(
+        db: AsyncSession,
+        client: TelegramApiClient,
+        assignment_id: int,
+        setting: BotSetting,
+    ) -> Dict[str, Any]:
+        res = await db.execute(
+            select(TelegramQuizAssignment)
+            .options(
+                selectinload(TelegramQuizAssignment.quiz),
+                selectinload(TelegramQuizAssignment.target)
+            )
+            .where(TelegramQuizAssignment.id == assignment_id)
+        )
+        assignment = res.scalar_one_or_none()
+        if not assignment or not assignment.target or not assignment.quiz:
+            return {"success": False, "message": "Assignment, quiz, or target not found"}
+
+        if assignment.poll_data or (assignment.status in ["active", "completed"] and assignment.announcement_message_id):
+            return {
+                "success": False,
+                "message": f"Quiz has already been posted to {assignment.target.title}. Duplicate posting prevented."
+            }
+
+        start_str = format_bd_time(assignment.start_time)
+        end_str = format_bd_time(assignment.end_time)
+
+        msg_lines = [
+            "🏆 <b>SCHEDULED QUIZ STARTED</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📋 <b>Quiz:</b> {assignment.quiz.title}",
+        ]
+        if assignment.quiz.description:
+            msg_lines.append(f"ℹ️ {assignment.quiz.description}")
+
+        msg_lines.extend([
+            f"📝 <b>Total Questions:</b> {assignment.quiz.total_questions}",
+            "⏳ <b>Active Window:</b>",
+            f"   • Starts: {start_str}",
+            f"   • Ends: {end_str}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"👇 All {assignment.quiz.total_questions} questions are appearing below as live quiz polls! Tap your answers to participate. Correct answers, explanations, and rankings will be published upon conclusion."
+        ])
+        text_body = "\n".join(msg_lines)
+
+        target_chat = int(assignment.target.chat_id) if (assignment.target.chat_id.startswith("-") and assignment.target.chat_id.lstrip("-").isdigit()) or assignment.target.chat_id.isdigit() else assignment.target.chat_id
+        
+        reply_kb = None
+        if assignment.target.chat_type == "channel" and setting and setting.bot_username:
+            b_uname = (setting.bot_username or "").lstrip("@")
+            reply_kb = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🏆 Register Attempt & Join Leaderboard",
+                            "url": f"https://t.me/{b_uname}?start=quiz_{assignment.id}"
+                        }
+                    ]
+                ]
+            }
+
+        intro_res = await client.send_message(target_chat, text_body, reply_markup=reply_kb, parse_mode="HTML")
+        if intro_res.get("ok"):
+            assignment.announcement_message_id = intro_res.get("result", {}).get("message_id")
+
+        q_ids = [q.strip() for q in assignment.quiz.question_ids.split(",") if q.strip()]
+        q_records = []
+        if q_ids:
+            q_res = await db.execute(
+                select(Question).options(selectinload(Question.options)).where(Question.id.in_(q_ids))
+            )
+            q_map = {q.id: q for q in q_res.scalars().all()}
+            q_records = [q_map[qid] for qid in q_ids if qid in q_map]
+
+        poll_list = []
+        is_anon = True if assignment.target.chat_type == "channel" else False
+
+        for idx, q in enumerate(q_records):
+            correct_idx = 0
+            opt_texts = []
+            for o_idx, opt in enumerate(q.options):
+                opt_texts.append(opt.option_text[:100])
+                if opt.is_correct:
+                    correct_idx = o_idx
+
+            exp = q.explanation[:200] if q.explanation else None
+            poll_res = await client.send_poll(
+                chat_id=target_chat,
+                question=f"Q{idx + 1}/{len(q_records)}: {q.question}"[:300],
+                options=opt_texts,
+                correct_option_id=correct_idx,
+                explanation=exp,
+                is_anonymous=is_anon,
+                poll_type="quiz",
+            )
+            if poll_res.get("ok"):
+                poll_obj = poll_res.get("result", {}).get("poll", {})
+                poll_id = str(poll_obj.get("id"))
+                msg_id = poll_res.get("result", {}).get("message_id")
+                poll_list.append({
+                    "poll_id": poll_id,
+                    "message_id": msg_id,
+                    "question_id": q.id,
+                    "question_index": idx,
+                    "question_text": q.question,
+                    "options": [{"id": opt.id, "text": opt.option_text, "is_correct": opt.is_correct, "explanation": opt.explanation} for opt in q.options],
+                    "correct_index": correct_idx,
+                    "explanation": q.explanation,
+                    "sent_at": utc_now().isoformat(),
+                })
+            await asyncio.sleep(0.8)
+
+        if assignment.target.chat_type == "channel" and setting and setting.bot_username:
+            b_uname = (setting.bot_username or "").lstrip("@")
+            end_btn_kb = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "🏆 Register Attempt & Join Leaderboard",
+                            "url": f"https://t.me/{b_uname}?start=quiz_{assignment.id}"
+                        }
+                    ]
+                ]
+            }
+            concluding_lines = [
+                "🏁 <b>All Questions Posted!</b>",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "💡 <i>Channel polls are anonymous by default.</i>",
+                "If you want to join the leaderboard and rank your score & time:",
+                "",
+                "👇 <b>Tap below to attempt from the bot:</b>"
+            ]
+            await asyncio.sleep(0.6)
+            await client.send_message(target_chat, "\n".join(concluding_lines), reply_markup=end_btn_kb, parse_mode="HTML")
+
+        assignment.poll_data = json.dumps(poll_list)
+        assignment.status = "active"
+        await db.flush()
+        return {"success": True, "message_id": assignment.announcement_message_id, "polls_sent": len(poll_list)}
+
+    @staticmethod
+    async def publish_quiz_leaderboard(
+        db: AsyncSession,
+        client: TelegramApiClient,
+        assignment_id: int,
+    ) -> Dict[str, Any]:
+        res = await db.execute(
+            select(TelegramQuizAssignment)
+            .options(
+                selectinload(TelegramQuizAssignment.quiz),
+                selectinload(TelegramQuizAssignment.target)
+            )
+            .where(TelegramQuizAssignment.id == assignment_id)
+        )
+        assignment = res.scalar_one_or_none()
+        if not assignment or not assignment.target or not assignment.quiz:
+            return {"success": False, "message": "Assignment not found"}
+
+        target_chat = int(assignment.target.chat_id) if (assignment.target.chat_id.startswith("-") and assignment.target.chat_id.lstrip("-").isdigit()) or assignment.target.chat_id.isdigit() else assignment.target.chat_id
+
+        poll_items = []
+        if assignment.poll_data:
+            try:
+                poll_items = json.loads(assignment.poll_data)
+            except Exception:
+                poll_items = []
+
+        if not poll_items and assignment.quiz.question_ids:
+            q_ids = [q.strip() for q in assignment.quiz.question_ids.split(",") if q.strip()]
+            q_res = await db.execute(
+                select(Question).options(selectinload(Question.options)).where(Question.id.in_(q_ids))
+            )
+            q_map = {q.id: q for q in q_res.scalars().all()}
+            for idx, qid in enumerate(q_ids):
+                if qid in q_map:
+                    q = q_map[qid]
+                    c_idx = next((i for i, opt in enumerate(q.options) if opt.is_correct), 0)
+                    poll_items.append({
+                        "question_text": q.question,
+                        "options": [{"text": opt.option_text, "is_correct": opt.is_correct, "explanation": opt.explanation} for opt in q.options],
+                        "correct_index": c_idx,
+                        "explanation": q.explanation,
+                    })
+
+        if poll_items:
+            expl_header = (
+                "📖 <b>QUIZ ANSWER KEY & EXPLANATIONS</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 <b>Quiz:</b> {assignment.quiz.title}\n"
+                f"🎯 <b>Target:</b> {assignment.target.title}\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            current_chunk = expl_header
+            for idx, p_item in enumerate(poll_items, start=1):
+                q_text = p_item.get("question_text", f"Question {idx}")
+                opts = p_item.get("options", [])
+                c_idx = p_item.get("correct_index", 0)
+                corr_text = opts[c_idx]["text"] if c_idx < len(opts) else "Correct Option"
+                exp = p_item.get("explanation") or (opts[c_idx].get("explanation") if c_idx < len(opts) else None)
+
+                block = f"\n<b>Q{idx}: {q_text}</b>\n✅ <b>Correct:</b> {corr_text}\n"
+                if exp:
+                    block += f"💡 <i>{exp}</i>\n"
+
+                if len(current_chunk) + len(block) > 3500:
+                    await client.send_message(target_chat, current_chunk, parse_mode="HTML")
+                    current_chunk = block
+                    await asyncio.sleep(0.2)
+                else:
+                    current_chunk += block
+
+            if current_chunk:
+                await client.send_message(target_chat, current_chunk, parse_mode="HTML")
+                await asyncio.sleep(0.3)
+
+        p_res = await db.execute(
+            select(TelegramQuizParticipant)
+            .options(selectinload(TelegramQuizParticipant.user))
+            .where(TelegramQuizParticipant.assignment_id == assignment_id)
+            .order_by(
+                desc(TelegramQuizParticipant.score),
+                TelegramQuizParticipant.total_time_seconds.asc(),
+                TelegramQuizParticipant.completed_at.asc()
+            )
+            .limit(50)
+        )
+        participants = p_res.scalars().all()
+
+        medals = ["🥇", "🥈", "🥉"]
+        lb_lines = [
+            "🏆 <b>QUIZ LEADERBOARD</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📋 <b>Quiz:</b> {assignment.quiz.title}",
+            f"🎯 <b>Target:</b> {assignment.target.title}",
+            f"👥 <b>Total Participants:</b> {len(participants)}",
+            f"⏱ <b>Quiz Ended:</b> {format_bd_time(utc_now())}",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if not participants:
+            lb_lines.append("<i>No attempts recorded for this quiz session.</i>")
+        else:
+            for rank, p in enumerate(participants, start=1):
+                prefix = medals[rank - 1] if rank <= 3 else f"{rank}."
+                uname = f" (@{p.user.username})" if p.user and p.user.username else ""
+                full_name = f"{p.user.first_name} {p.user.last_name or ''}".strip() if p.user else "Candidate"
+                mins, secs = divmod(p.total_time_seconds, 60)
+                time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                lb_lines.append(f"{prefix} <b>{full_name}</b>{uname}")
+                lb_lines.append(f"   Score: <b>{p.score:.2f}</b> pts | Correct: {p.correct_count}/{assignment.quiz.total_questions} | Time Spent: {time_str}")
+
+        lb_lines.extend([
+            "━━━━━━━━━━━━━━━━━━━━",
+            "🎉 <i>Congratulations to all top rankers and participants!</i>"
+        ])
+        lb_text = "\n".join(lb_lines)
+
+        send_res = await client.send_message(target_chat, lb_text, parse_mode="HTML")
+        if send_res.get("ok"):
+            assignment.leaderboard_message_id = send_res.get("result", {}).get("message_id")
+            assignment.leaderboard_published_at = utc_now()
+            assignment.status = "completed"
+            await db.flush()
+            return {"success": True, "message_id": assignment.leaderboard_message_id}
+        return {"success": False, "message": send_res.get("description", "Failed to publish leaderboard")}
+
+    @staticmethod
+    async def sync_quiz_schedules(
+        db: AsyncSession,
+        client: Optional[TelegramApiClient] = None,
+        setting: Optional[BotSetting] = None,
+    ) -> None:
+        now = utc_now()
+        if not setting:
+            setting = await TelegramEngine.get_settings(db)
+        if not client and setting and setting.bot_token:
+            client = TelegramApiClient(setting.bot_token)
+
+        sch_res = await db.execute(
+            select(TelegramQuizAssignment)
+            .where(
+                and_(
+                    TelegramQuizAssignment.status == "scheduled",
+                    TelegramQuizAssignment.start_time <= now,
+                    TelegramQuizAssignment.end_time > now
+                )
+            )
+        )
+        to_start = sch_res.scalars().all()
+        for asg in to_start:
+            if not asg.poll_data and not asg.announcement_message_id and setting and setting.bot_token and client:
+                try:
+                    await TelegramEngine.publish_quiz_announcement(db, client, asg.id, setting)
+                except Exception:
+                    asg.status = "active"
+                    await db.flush()
+            else:
+                asg.status = "active"
+                await db.flush()
+
+        ended_res = await db.execute(
+            select(TelegramQuizAssignment)
+            .where(
+                and_(
+                    TelegramQuizAssignment.status.in_(["scheduled", "active"]),
+                    TelegramQuizAssignment.end_time <= now,
+                    TelegramQuizAssignment.leaderboard_published_at.is_(None)
+                )
+            )
+        )
+        to_complete = ended_res.scalars().all()
+        for asg in to_complete:
+            try:
+                if client:
+                    await TelegramEngine.publish_quiz_leaderboard(db, client, asg.id)
+                else:
+                    asg.status = "completed"
+                    await db.flush()
+            except Exception:
+                asg.status = "completed"
+                await db.flush()
+
+    @staticmethod
+    async def start_scheduled_quiz_flow(
+        db: AsyncSession,
+        client: TelegramApiClient,
+        user: TelegramUser,
+        assignment_id: int,
+        chat_id: int,
+    ) -> None:
+        now = utc_now()
+        res = await db.execute(
+            select(TelegramQuizAssignment)
+            .options(
+                selectinload(TelegramQuizAssignment.quiz),
+                selectinload(TelegramQuizAssignment.target)
+            )
+            .where(TelegramQuizAssignment.id == assignment_id)
+        )
+        assignment = res.scalar_one_or_none()
+        if not assignment or not assignment.quiz:
+            await client.send_message(chat_id, "Quiz session not found or has been removed.")
+            return
+
+        if assignment.status == "cancelled":
+            await client.send_message(chat_id, "This quiz has been cancelled by administration.")
+            return
+
+        if now < assignment.start_time:
+            st_str = format_bd_time(assignment.start_time)
+            await client.send_message(
+                chat_id,
+                f"Quiz Not Started Yet\n\nQuiz: {assignment.quiz.title}\nStarts at: {st_str}\n\nPlease check back when the countdown arrives."
+            )
+            return
+
+        if now > assignment.end_time:
+            target_title = assignment.target.title if assignment.target else "the channel"
+            ret_kb = None
+            if assignment.target:
+                t_icon = "📢" if assignment.target.chat_type == "channel" else "👥"
+                t_url = None
+                t_chat_str = str(assignment.target.chat_id or "").strip()
+                if t_chat_str.startswith("@"):
+                    t_url = f"https://t.me/{t_chat_str.lstrip('@')}"
+                if t_url:
+                    ret_kb = {"inline_keyboard": [[{"text": f"{t_icon} {target_title}", "url": t_url}]]}
+            await client.send_message(
+                chat_id,
+                f"Quiz Window Closed\n\nQuiz: {assignment.quiz.title} has already ended.\nThe leaderboard has been published to {target_title}.",
+                reply_markup=ret_kb
+            )
+            return
+
+        part_res = await db.execute(
+            select(TelegramQuizParticipant)
+            .where(
+                and_(
+                    TelegramQuizParticipant.assignment_id == assignment_id,
+                    TelegramQuizParticipant.user_id == user.id
+                )
+            )
+        )
+        participant = part_res.scalar_one_or_none()
+        if participant and participant.status == "completed":
+            target_title = assignment.target.title if assignment.target else "the channel"
+            end_time_str = format_bd_time(assignment.end_time)
+            ret_kb = None
+            if assignment.target:
+                t_icon = "📢" if assignment.target.chat_type == "channel" else "👥"
+                t_url = None
+                t_chat_str = str(assignment.target.chat_id or "").strip()
+                if t_chat_str.startswith("@"):
+                    t_url = f"https://t.me/{t_chat_str.lstrip('@')}"
+                if t_url:
+                    ret_kb = {"inline_keyboard": [[{"text": f"{t_icon} {target_title}", "url": t_url}]]}
+            await client.send_message(
+                chat_id,
+                f"Already Completed\n\nYou have already finished {assignment.quiz.title}.\nScore: {participant.score:.2f} pts\nCorrect: {participant.correct_count} / {assignment.quiz.total_questions}\n\nThe final leaderboard will be published to {target_title} once the quiz ends at {end_time_str}.",
+                reply_markup=ret_kb
+            )
+            return
+
+        q_ids = [q.strip() for q in assignment.quiz.question_ids.split(",") if q.strip()]
+        if not q_ids:
+            await client.send_message(chat_id, "This quiz does not contain any questions yet.")
+            return
+
+        active_sess = None
+        if participant and participant.exam_session_id:
+            s_res = await db.execute(
+                select(ExamSession).where(
+                    and_(
+                        ExamSession.id == participant.exam_session_id,
+                        ExamSession.status == "in_progress"
+                    )
+                )
+            )
+            active_sess = s_res.scalar_one_or_none()
+
+        if not active_sess:
+            active_sess = ExamSession(
+                user_id=user.id,
+                chat_id=chat_id,
+                strategy_used=f"scheduled_quiz:{assignment.id}",
+                difficulty="mixed",
+                total_questions=len(q_ids),
+                current_index=0,
+                question_ids=",".join(q_ids),
+                score=0.00,
+                max_score=float(len(q_ids)),
+                status="in_progress",
+                started_at=now,
+            )
+            db.add(active_sess)
+            await db.flush()
+
+            if not participant:
+                participant = TelegramQuizParticipant(
+                    assignment_id=assignment.id,
+                    user_id=user.id,
+                    exam_session_id=active_sess.id,
+                    score=0.00,
+                    correct_count=0,
+                    wrong_count=0,
+                    skipped_count=0,
+                    total_time_seconds=0,
+                    status="in_progress",
+                    started_at=now,
+                )
+                db.add(participant)
+            else:
+                participant.exam_session_id = active_sess.id
+                participant.status = "in_progress"
+            await db.flush()
+
+        user.flow_state = "exam"
+        user.last_active_session_id = active_sess.id
+        await db.flush()
+
+        target_title = assignment.target.title if assignment.target else "Channel/Group"
+        welcome_text = (
+            f"🎯 <b>Scheduled Quiz: {assignment.quiz.title}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Target: {target_title}\n"
+            f"Total Questions: {len(q_ids)}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Your attempt is being timed and will be ranked on the leaderboard!\n"
+            f"Starting Question 1 now. Good luck!"
+        )
+        await client.send_message(chat_id, welcome_text, parse_mode="HTML")
+        await TelegramEngine.send_exam_question_poll(db, client, chat_id, active_sess)

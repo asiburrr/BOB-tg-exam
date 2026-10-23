@@ -441,7 +441,7 @@ async def move_questions(
 @router.get("", response_model=PaginatedResponse[QuestionResponse])
 async def list_questions(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=500),
     category_id: Optional[str] = Query(None),
     category_ids: Optional[str] = Query(None),
     exact: bool = Query(False),

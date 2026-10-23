@@ -192,3 +192,80 @@ class ExamAnswer(Base):
     answered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     session: Mapped["ExamSession"] = relationship("ExamSession", back_populates="answers")
+
+class TelegramQuizTarget(Base):
+    __tablename__ = "telegram_quiz_targets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    chat_type: Mapped[str] = mapped_column(String(30), default="channel", nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    assignments: Mapped[List["TelegramQuizAssignment"]] = relationship("TelegramQuizAssignment", back_populates="target", cascade="all, delete-orphan")
+
+class TelegramQuiz(Base):
+    __tablename__ = "telegram_quizzes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    category_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("questions_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    time_limit_per_question: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    total_time_minutes: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    negative_marking_rate: Mapped[float] = mapped_column(Numeric(4, 2), default=0.00, nullable=False)
+    question_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    total_questions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    assignments: Mapped[List["TelegramQuizAssignment"]] = relationship("TelegramQuizAssignment", back_populates="quiz", cascade="all, delete-orphan")
+
+class TelegramQuizAssignment(Base):
+    __tablename__ = "telegram_quiz_assignments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    quiz_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("telegram_quizzes.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("telegram_quiz_targets.id", ondelete="CASCADE"), nullable=False, index=True)
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="scheduled", nullable=False, index=True)
+    announcement_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    leaderboard_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    leaderboard_published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    total_participants: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    poll_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    quiz: Mapped["TelegramQuiz"] = relationship("TelegramQuiz", back_populates="assignments")
+    target: Mapped["TelegramQuizTarget"] = relationship("TelegramQuizTarget", back_populates="assignments")
+    participants: Mapped[List["TelegramQuizParticipant"]] = relationship("TelegramQuizParticipant", back_populates="assignment", cascade="all, delete-orphan")
+
+class TelegramQuizParticipant(Base):
+    __tablename__ = "telegram_quiz_participants"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    assignment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("telegram_quiz_assignments.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("telegram_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    exam_session_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("telegram_exam_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    score: Mapped[float] = mapped_column(Numeric(6, 2), default=0.00, nullable=False)
+    correct_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    wrong_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_time_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="in_progress", nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    answers_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    assignment: Mapped["TelegramQuizAssignment"] = relationship("TelegramQuizAssignment", back_populates="participants")
+    user: Mapped["TelegramUser"] = relationship("TelegramUser")
+    session: Mapped[Optional["ExamSession"]] = relationship("ExamSession")

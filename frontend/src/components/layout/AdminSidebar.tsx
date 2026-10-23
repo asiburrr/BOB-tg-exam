@@ -230,6 +230,19 @@ export function AdminSidebar({ mobileOpen = false, onCloseMobile }: AdminSidebar
                   </Link>
 
                   <Link
+                    href="/admin/bot/quizzes"
+                    prefetch={true}
+                    onClick={onCloseMobile}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${pathname === "/admin/bot/quizzes"
+                        ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 shadow-sm font-semibold"
+                        : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-500/10 hover:text-neutral-900 dark:hover:text-white"
+                      }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${pathname === "/admin/bot/quizzes" ? "bg-white dark:bg-neutral-900" : "bg-neutral-400"}`} />
+                    <span>Channel Quizzes</span>
+                  </Link>
+
+                  <Link
                     href="/admin/bot/broadcast"
                     prefetch={true}
                     onClick={onCloseMobile}

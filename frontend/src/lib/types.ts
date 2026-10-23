@@ -242,3 +242,76 @@ export interface AdminUpdatePayload {
   password?: string;
   permissions?: string[];
 }
+
+export interface TelegramQuizTarget {
+  id: number;
+  title: string;
+  chat_id: string;
+  chat_type: "channel" | "group" | "supergroup";
+  description?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TelegramQuiz {
+  id: number;
+  title: string;
+  description?: string | null;
+  category_id?: string | null;
+  time_limit_per_question: number;
+  total_time_minutes: number;
+  negative_marking_rate: number;
+  total_questions: number;
+  question_ids?: string[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TelegramQuizAssignment {
+  id: number;
+  quiz_id: number;
+  target_id: number;
+  quiz_title?: string | null;
+  target_title?: string | null;
+  target_chat_id?: string | null;
+  target_chat_type?: string | null;
+  total_questions: number;
+  start_time: string;
+  end_time: string;
+  status: "scheduled" | "active" | "completed" | "cancelled";
+  announcement_message_id?: number | null;
+  leaderboard_message_id?: number | null;
+  leaderboard_published_at?: string | null;
+  total_participants: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TelegramQuizLeaderboardEntry {
+  rank: number;
+  user_id: number;
+  telegram_id: number;
+  first_name: string;
+  last_name?: string | null;
+  username?: string | null;
+  score: number;
+  correct_count: number;
+  wrong_count: number;
+  skipped_count: number;
+  total_time_seconds: number;
+  completed_at?: string | null;
+}
+
+export interface TelegramQuizLeaderboard {
+  assignment_id: number;
+  quiz_title: string;
+  target_title: string;
+  total_participants: number;
+  status: string;
+  start_time: string;
+  end_time: string;
+  leaderboard_published_at?: string | null;
+  leaderboard: TelegramQuizLeaderboardEntry[];
+}

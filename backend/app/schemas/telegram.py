@@ -317,3 +317,130 @@ class BroadcastSendResponse(BaseModel):
     success: bool = True
     targets_count: int = 0
     message: str = ""
+
+class TelegramQuizTargetCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    chat_id: str = Field(..., min_length=1, max_length=100)
+    chat_type: str = Field("channel", pattern="^(channel|group|supergroup)$")
+    description: Optional[str] = None
+    is_active: bool = True
+
+class TelegramQuizTargetUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    chat_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    chat_type: Optional[str] = Field(None, pattern="^(channel|group|supergroup)$")
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class TelegramQuizTargetResponse(BaseModel):
+    id: int
+    title: str
+    chat_id: str
+    chat_type: str
+    description: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TelegramQuizCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    category_id: Optional[str] = None
+    time_limit_per_question: int = 0
+    total_time_minutes: int = 0
+    negative_marking_rate: float = Field(0.00, ge=0.00, le=5.00)
+    question_ids: List[str] = Field(..., min_length=1)
+    is_active: bool = True
+
+class TelegramQuizUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    category_id: Optional[str] = None
+    time_limit_per_question: Optional[int] = 0
+    total_time_minutes: Optional[int] = 0
+    negative_marking_rate: Optional[float] = Field(None, ge=0.00, le=5.00)
+    question_ids: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+class TelegramQuizResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    category_id: Optional[str] = None
+    time_limit_per_question: int = 0
+    total_time_minutes: int = 0
+    negative_marking_rate: float = 0.00
+    total_questions: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TelegramQuizDetailResponse(TelegramQuizResponse):
+    question_ids: List[str] = []
+
+class TelegramQuizAssignmentCreate(BaseModel):
+    quiz_id: int
+    target_id: int
+    start_time: datetime
+    end_time: datetime
+    announce_now: bool = False
+
+class TelegramQuizAssignmentUpdate(BaseModel):
+    quiz_id: Optional[int] = None
+    target_id: Optional[int] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    status: Optional[str] = Field(None, pattern="^(scheduled|active|completed|cancelled)$")
+
+class TelegramQuizAssignmentResponse(BaseModel):
+    id: int
+    quiz_id: int
+    target_id: int
+    quiz_title: Optional[str] = None
+    target_title: Optional[str] = None
+    target_chat_id: Optional[str] = None
+    target_chat_type: Optional[str] = None
+    total_questions: int = 0
+    start_time: datetime
+    end_time: datetime
+    status: str
+    announcement_message_id: Optional[int] = None
+    leaderboard_message_id: Optional[int] = None
+    leaderboard_published_at: Optional[datetime] = None
+    total_participants: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TelegramQuizLeaderboardEntry(BaseModel):
+    rank: int
+    user_id: int
+    telegram_id: int
+    first_name: str
+    last_name: Optional[str] = None
+    username: Optional[str] = None
+    score: float
+    correct_count: int
+    wrong_count: int
+    skipped_count: int
+    total_time_seconds: int
+    completed_at: Optional[datetime] = None
+
+class TelegramQuizLeaderboardResponse(BaseModel):
+    assignment_id: int
+    quiz_title: str
+    target_title: str
+    total_participants: int
+    status: str
+    start_time: datetime
+    end_time: datetime
+    leaderboard_published_at: Optional[datetime] = None
+    leaderboard: List[TelegramQuizLeaderboardEntry] = []

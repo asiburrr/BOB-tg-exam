@@ -491,9 +491,80 @@ The system defines exactly two administrative roles:
         - Converted webhook handling in [telegram.py](file:///d:/Task/web/project/bob/exam/backend/app/api/v1/telegram.py) from detached `BackgroundTasks` to direct in-request synchronous processing, ensuring complete execution before Lambda freezing.
       - **Mangum ASGI Handler**: Exported `handler = Mangum(app)` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) for serverless AWS Lambda execution while retaining standard ASGI support (`uvicorn app.main:app`).
       - **Serverless-Aware Database Session Management**: Updated [db/session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to automatically detect Lambda environments (`AWS_LAMBDA_FUNCTION_NAME` / `LAMBDA_TASK_ROOT`) and switch to `NullPool` to prevent connection exhaustion, while retaining persistent connection pooling (`pool_pre_ping=True`, `pool_size=10`, `max_overflow=20`, `pool_recycle=300`) for traditional Docker/VPS servers.
-    - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero-comments policy.
+    - **Telegram Channel & Group Quizzes with Automated Scheduling & Leaderboard**:
+      - **Target Destinations Setup (`TelegramQuizTarget`)**:
+        - Added `telegram_quiz_targets` table and CRUD endpoints (`GET/POST /api/v1/telegram/quiz-targets`, `PUT/DELETE /api/v1/telegram/quiz-targets/{id}`) for registering Telegram channels and study groups authorized for quiz broadcasts and official leaderboards.
+        - Updated `handle_update` in [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py) to automatically recognize registered targets so the bot remains in authorized quiz groups and channels without auto-leaving.
+      - **Custom Quiz Designer (`TelegramQuiz`)**:
+        - Added `telegram_quizzes` table and endpoints (`GET/POST /api/v1/telegram/quizzes`, `GET/PUT/DELETE /api/v1/telegram/quizzes/{id}`).
+        - Admins design custom quizzes by selecting questions from the Question Bank with live category filters, search, countdown timer per question (`time_limit_per_question`), overall exam window (`total_time_minutes`), and negative scoring (`negative_marking_rate`).
+      - **Quiz Assignment & Scheduling Engine (`TelegramQuizAssignment`)**:
+        - Added `telegram_quiz_assignments` table and endpoints (`GET/POST /api/v1/telegram/quiz-assignments`, `PUT/DELETE /api/v1/telegram/quiz-assignments/{id}`).
+        - Assigns a designed quiz to a target channel/group with specified `start_time` and `end_time` (UTC-aware).
+        - Optional immediate announcement broadcast sends a start card to the channel with an inline URL button directing candidates to private chat (`t.me/{bot}?start=quiz_{assignment_id}`).
+      - **Candidate Assessment Flow (`telegram_quiz_participants`)**:
+        - Added `telegram_quiz_participants` table recording per-user score, correct/wrong/skipped counts, duration, and completion timestamp.
+        - Added `/start quiz_{id}` deep link parser in `handle_update` calling `start_scheduled_quiz_flow`.
+        - Enforces active window: candidates are barred from starting before `start_time`, after `end_time`, or retaking completed attempts.
+        - Upon completion in private chat, records exact score and duration in `TelegramQuizParticipant` and returns completion summary.
+      - **Automated & Manual Leaderboard Publishing**:
+        - Serverless-friendly scheduler sync (`sync_quiz_schedules`) automatically activates due quizzes and publishes official leaderboards upon expiration during Telegram updates and admin API interactions, with zero detached worker threads.
+        - Endpoints `POST /quiz-assignments/{id}/announce`, `POST /quiz-assignments/{id}/publish-leaderboard`, and `GET /quiz-assignments/{id}/leaderboard` provide manual controls and live ranking inspection.
+        - Official Leaderboard posts to the channel/group featuring medals (🥇, 🥈, 🥉), candidate names, handles, score, correct questions count, and completion duration.
+      - **Modular Component-Driven Frontend Architecture**:
+        - Created `QuizTargetsList.tsx`, `QuizTargetModal.tsx`, `QuizList.tsx`, `QuizDesignerModal.tsx`, `QuizAssignmentsList.tsx`, `QuizAssignModal.tsx`, and `QuizLeaderboardModal.tsx` in [components/quizzes/](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/).
+        - Built comprehensive management page [admin/bot/quizzes/page.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/app/admin/bot/quizzes/page.tsx) with live stat widgets and tabbed views.
+        - Added "Channel Quizzes" navigation link to [AdminSidebar.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/layout/AdminSidebar.tsx).
+      - **Telegram Live Channel & Group Poll Quizzes with BST Scheduling & Automated Explanations**:
+        - **Direct Telegram Native Quiz Polls**:
+          - All questions in a quiz are dispatched directly as native Telegram Quiz Polls (`type="quiz"`) to the target channel or study group upon quiz activation.
+          - Added channel compatibility in `TelegramApiClient.send_poll` with automatic fallback to `is_anonymous=True` when sending to broadcast channels.
+          - Added `poll_data` text column to `TelegramQuizAssignment` to persist poll IDs, message IDs, option keys, correct indices, explanations, and timestamps.
+        - **Removal of Timer Inputs**:
+          - Removed `Total Time Allowed (Mins)` and `Seconds per Question` from the Quiz Designer modal, Quiz List, and Assignment modal since questions are published directly to channels/groups.
+          - Backend schemas `TelegramQuizCreate` and `TelegramQuizUpdate` default timer values to 0.
+        - **Bangladesh Standard Time (BST, UTC+6) Scheduling**:
+          - Added `to_bd_time(dt)` and `format_bd_time(dt)` in [telegram_engine.py](file:///d:/Task/web/project/bob/exam/backend/app/services/telegram_engine.py) formatting timestamps in BST (`Asia/Dhaka`, UTC+6).
+          - Updated [QuizAssignModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizAssignModal.tsx), [QuizAssignmentsList.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizAssignmentsList.tsx), and [QuizLeaderboardModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizLeaderboardModal.tsx) to display, compute, and parse schedules explicitly in Bangladesh Standard Time (`(BST)`).
+        - **Accurate Time-Spent Measurement & Scoring**:
+          - Incoming `poll_answer` events in groups are parsed by `handle_quiz_poll_answer`.
+          - Computes exact duration in seconds from candidate's initial answer timestamp to final answer timestamp.
+          - Accurately computes score (+1.00 for correct, `-negative_marking_rate` for wrong), updates participant state, and breaks score ties using elapsed time spent.
+        - **Automated Answer Key, Explanations & Leaderboard Publication**:
+          - Upon expiration at end time (or manual admin trigger), `publish_quiz_leaderboard`:
+            1. Publishes the comprehensive Answer Key & Explanations card (`Q{n}: {question_text}`, `✅ Correct Answer: {option}`, `💡 Explanation: {explanation}`) with auto-chunking for Telegram message limits.
+            2. Publishes the Official Leaderboard card with medals (🥇🥈🥉), full names, `@usernames`, net score, correct/wrong counts, accurate duration, and conclusion timestamp in BST.
+        - **Duplicate Posting Prevention & Status Locking**:
+          - Added duplicate post detection in `publish_quiz_announcement`: blocks duplicate broadcasts and poll dispatches if the assignment already has `poll_data` or is marked `active` or `completed`.
+          - Updated [QuizAssignmentsList.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizAssignmentsList.tsx) to confirm before manual trigger and conditionally render a locked `Polls Posted` badge for active or completed quizzes, preventing accidental reposting.
+        - **24/7 Fully Automated Background Scheduler**:
+          - Added async `run_quiz_scheduler_worker` loop in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) lifespan executing every 15 seconds.
+          - Automatically triggers `TelegramEngine.sync_quiz_schedules(db)`: activates quizzes, dispatches polls at scheduled `start_time`, automatically ends expired quizzes at `end_time`, and broadcasts official answer keys with explanations and leaderboards with zero human presence needed.
+        - **Accurate First-Tap to Last-Tap Time Spent Calculation**:
+          - Added `answers_data` text column to `TelegramQuizParticipant` recording per-question tap timestamps (`answered_at`).
+          - In `handle_quiz_poll_answer`, computes candidate's `started_at` from their very first tap and `completed_at` from their latest tap, setting `total_time_seconds = max(1, int((last_tap - first_tap).total_seconds()))`.
+        - **Channel Deep-Link & Real-Time Attempt Synchronization**:
+          - Priority `/start quiz_{id}` deep-link handler placed at the top of `handle_update` before onboarding or force-join rules to prevent deep links from being swallowed or discarded.
+          - Added command parsing support for Telegram client command variations like `/start@bot_username quiz_{id}`.
+          - Sanitized bot username links with `.lstrip("@")` in channel announcements to guarantee standard `https://t.me/bot?start=quiz_{id}` deep-link formatting.
+          - Immediate real-time synchronization: every poll answer in private chat immediately records or updates `TelegramQuizParticipant` (score, correct/wrong count, and elapsed time spent) so candidate attempts appear on the leaderboard in real time.
+          - Relaxed start quiz lock to allow participation as long as current time is within `now <= assignment.end_time`.
+        - **Target Channel / Group Return Action on Quiz Completion**:
+          - Replaced the generic `Main Menu` button on the scheduled quiz completion card with a direct return button linking to the source channel or group (e.g., `📢 Battles Of Biology || QUIZ` or `👥 Test group`).
+          - Resolved target URLs from public `@usernames`, Telegram `getChat` lookup, or direct supergroup IDs.
+          - Updated countdown and conclusion timestamps in scheduled completion cards to Bangladesh Standard Time (`format_bd_time(dt)`).
+        - **Question Sequencing & Concluding Leaderboard Call-to-Action**:
+          - Increased dispatch interval between questions to `0.8s` to guarantee strictly ordered delivery (`Q1`, `Q2`, `Q3`, `Q4`) on Telegram channels and groups without out-of-order race conditions.
+        - **Quiz Designer Question Bank Filtering & Group-Wise Category Selection**:
+          - Integrated Group-Wise Categories Selector into the "Select Questions" panel of [QuizDesignerModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizDesignerModal.tsx), matching the Question Bank design with hierarchical tree search, expand/collapse nodes, direct/total question count badges, and exact match vs inheritance toggles.
+          - Added Difficulty level pill filters (`All`, `Easy`, `Medium`, `Hard`, `Expert`) and search input with instant clear buttons to easily filter questions by criteria.
+          - Updated Quiz Category Tag field to use the universal `CategoryTreeSelect` component.
+        - **Modal Stacking Context & Full-Viewport Backdrop Blur Alignment**:
+          - Portaled all channel quiz modals ([QuizDesignerModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizDesignerModal.tsx), [QuizTargetModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizTargetModal.tsx), [QuizAssignModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizAssignModal.tsx), and [QuizLeaderboardModal.tsx](file:///d:/Task/web/project/bob/exam/frontend/src/components/quizzes/QuizLeaderboardModal.tsx)) directly to `document.body` via `createPortal`.
+          - Elevated layer stack to `z-[9999]` with system `bg-black/60 dark:bg-black/80 backdrop-blur-md` overlay covering 100% of the screen above the sticky navbar and sidebar, resolving clipping under the navigation bar and matching the promotional campaign modal standard.
+      - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps
-- Production webhook flow, Access & Community controls, promotional broadcast engine, direct messaging, modular component-driven UI, onboarding tree manager with real-time slug ID generation and smart locking, clean database schema, AWS Lambda & traditional dual deployment compatibility, and Administrator & RBAC Access Management ready and verified.
+- Production webhook flow, Access & Community controls, promotional broadcast engine, direct messaging, modular component-driven UI, onboarding tree manager with real-time slug ID generation and smart locking, clean database schema, AWS Lambda & traditional dual deployment compatibility, Administrator & RBAC Access Management, and Telegram Live Poll Quizzes with BST scheduling, 24/7 automated scheduler, duplicate post prevention, accurate first-to-last tap time calculation, channel deep-link routing, and real-time attempt leaderboard tracking ready and verified.
 
 

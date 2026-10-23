@@ -11,13 +11,42 @@ from app.api.v1.admins import router as admins_router
 from app.api.v1.questions import router as questions_router
 from app.api.v1.telegram import router as telegram_router, track_promotion_click
 
+import asyncio
+
+async def run_quiz_scheduler_worker():
+    while True:
+        try:
+            await asyncio.sleep(15)
+            from app.db.session import AsyncSessionLocal
+            from app.services.telegram_engine import TelegramEngine
+            async with AsyncSessionLocal() as db:
+                await TelegramEngine.sync_quiz_schedules(db)
+                await db.commit()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         await init_db_and_tables()
     except Exception:
         pass
+
+    worker_task = None
+    if not is_lambda:
+        worker_task = asyncio.create_task(run_quiz_scheduler_worker())
+
     yield
+
+    if worker_task:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
     try:
         await engine.dispose()
     except Exception:

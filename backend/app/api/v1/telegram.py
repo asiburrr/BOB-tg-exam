@@ -1,7 +1,9 @@
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func, desc, and_, or_, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,6 +19,10 @@ from app.models.telegram import (
     TelegramPromotion,
     ExamSession,
     ExamAnswer,
+    TelegramQuizTarget,
+    TelegramQuiz,
+    TelegramQuizAssignment,
+    TelegramQuizParticipant,
 )
 from app.schemas.response import ApiResponse, PaginatedResponse, PaginatedMeta
 from app.schemas.telegram import (
@@ -39,6 +45,18 @@ from app.schemas.telegram import (
     WebhookInfoResponse,
     BroadcastSendRequest,
     BroadcastSendResponse,
+    TelegramQuizTargetCreate,
+    TelegramQuizTargetUpdate,
+    TelegramQuizTargetResponse,
+    TelegramQuizCreate,
+    TelegramQuizUpdate,
+    TelegramQuizResponse,
+    TelegramQuizDetailResponse,
+    TelegramQuizAssignmentCreate,
+    TelegramQuizAssignmentUpdate,
+    TelegramQuizAssignmentResponse,
+    TelegramQuizLeaderboardEntry,
+    TelegramQuizLeaderboardResponse,
 )
 from app.services.telegram_engine import TelegramApiClient, TelegramEngine
 
@@ -998,3 +1016,437 @@ async def send_broadcast(
             message=result.get("message", "")
         )
     )
+
+@router.get("/quiz-targets", response_model=ApiResponse[List[TelegramQuizTargetResponse]])
+async def list_quiz_targets(
+    is_active: Optional[bool] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    query = select(TelegramQuizTarget).order_by(desc(TelegramQuizTarget.created_at))
+    if is_active is not None:
+        query = query.where(TelegramQuizTarget.is_active == is_active)
+    res = await db.execute(query)
+    targets = res.scalars().all()
+    return ApiResponse(success=True, data=targets)
+
+@router.post("/quiz-targets", response_model=ApiResponse[TelegramQuizTargetResponse], status_code=status.HTTP_201_CREATED)
+async def create_quiz_target(
+    payload: TelegramQuizTargetCreate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    target = TelegramQuizTarget(
+        title=payload.title.strip(),
+        chat_id=payload.chat_id.strip(),
+        chat_type=payload.chat_type,
+        description=payload.description,
+        is_active=payload.is_active,
+        created_by=current_admin.id,
+    )
+    db.add(target)
+    await db.commit()
+    await db.refresh(target)
+    return ApiResponse(success=True, message="Target added successfully", data=target)
+
+@router.put("/quiz-targets/{target_id}", response_model=ApiResponse[TelegramQuizTargetResponse])
+async def update_quiz_target(
+    target_id: int,
+    payload: TelegramQuizTargetUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuizTarget).where(TelegramQuizTarget.id == target_id))
+    target = res.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz target not found")
+    for field, val in payload.model_dump(exclude_unset=True).items():
+        if val is not None and isinstance(val, str):
+            val = val.strip()
+        setattr(target, field, val)
+    await db.commit()
+    await db.refresh(target)
+    return ApiResponse(success=True, message="Target updated successfully", data=target)
+
+@router.delete("/quiz-targets/{target_id}", response_model=ApiResponse[Dict[str, Any]])
+async def delete_quiz_target(
+    target_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuizTarget).where(TelegramQuizTarget.id == target_id))
+    target = res.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz target not found")
+    await db.delete(target)
+    await db.commit()
+    return ApiResponse(success=True, message="Target deleted successfully")
+
+@router.get("/quizzes", response_model=ApiResponse[List[TelegramQuizResponse]])
+async def list_quizzes(
+    is_active: Optional[bool] = Query(None),
+    category_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    query = select(TelegramQuiz).order_by(desc(TelegramQuiz.created_at))
+    if is_active is not None:
+        query = query.where(TelegramQuiz.is_active == is_active)
+    if category_id:
+        query = query.where(TelegramQuiz.category_id == category_id)
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.where(or_(TelegramQuiz.title.ilike(s), TelegramQuiz.description.ilike(s)))
+    res = await db.execute(query)
+    quizzes = res.scalars().all()
+    return ApiResponse(success=True, data=quizzes)
+
+@router.post("/quizzes", response_model=ApiResponse[TelegramQuizResponse], status_code=status.HTTP_201_CREATED)
+async def create_quiz(
+    payload: TelegramQuizCreate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    q_ids_clean = [q.strip() for q in payload.question_ids if q.strip()]
+    if not q_ids_clean:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one question must be selected")
+    quiz = TelegramQuiz(
+        title=payload.title.strip(),
+        description=payload.description,
+        category_id=payload.category_id,
+        time_limit_per_question=payload.time_limit_per_question or 0,
+        total_time_minutes=payload.total_time_minutes or 0,
+        negative_marking_rate=payload.negative_marking_rate,
+        question_ids=",".join(q_ids_clean),
+        total_questions=len(q_ids_clean),
+        is_active=payload.is_active,
+        created_by=current_admin.id,
+    )
+    db.add(quiz)
+    await db.commit()
+    await db.refresh(quiz)
+    return ApiResponse(success=True, message="Quiz created successfully", data=quiz)
+
+@router.get("/quizzes/{quiz_id}", response_model=ApiResponse[TelegramQuizDetailResponse])
+async def get_quiz_detail(
+    quiz_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuiz).where(TelegramQuiz.id == quiz_id))
+    quiz = res.scalar_one_or_none()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+    q_ids = [q.strip() for q in (quiz.question_ids or "").split(",") if q.strip()]
+    data = TelegramQuizDetailResponse.model_validate(quiz)
+    data.question_ids = q_ids
+    return ApiResponse(success=True, data=data)
+
+@router.put("/quizzes/{quiz_id}", response_model=ApiResponse[TelegramQuizResponse])
+async def update_quiz(
+    quiz_id: int,
+    payload: TelegramQuizUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuiz).where(TelegramQuiz.id == quiz_id))
+    quiz = res.scalar_one_or_none()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+    update_data = payload.model_dump(exclude_unset=True)
+    if "question_ids" in update_data and update_data["question_ids"] is not None:
+        q_ids = [q.strip() for q in update_data["question_ids"] if q.strip()]
+        quiz.question_ids = ",".join(q_ids)
+        quiz.total_questions = len(q_ids)
+        update_data.pop("question_ids")
+    for field, val in update_data.items():
+        if val is not None and isinstance(val, str):
+            val = val.strip()
+        setattr(quiz, field, val)
+    await db.commit()
+    await db.refresh(quiz)
+    return ApiResponse(success=True, message="Quiz updated successfully", data=quiz)
+
+@router.delete("/quizzes/{quiz_id}", response_model=ApiResponse[Dict[str, Any]])
+async def delete_quiz(
+    quiz_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuiz).where(TelegramQuiz.id == quiz_id))
+    quiz = res.scalar_one_or_none()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+    await db.delete(quiz)
+    await db.commit()
+    return ApiResponse(success=True, message="Quiz deleted successfully")
+
+@router.get("/quiz-assignments", response_model=ApiResponse[List[TelegramQuizAssignmentResponse]])
+async def list_quiz_assignments(
+    status_filter: Optional[str] = Query(None),
+    target_id: Optional[int] = Query(None),
+    quiz_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if setting and setting.bot_token:
+        client = TelegramApiClient(token=setting.bot_token)
+        try:
+            await TelegramEngine.sync_quiz_schedules(db, client, setting)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    query = (
+        select(TelegramQuizAssignment)
+        .options(
+            selectinload(TelegramQuizAssignment.quiz),
+            selectinload(TelegramQuizAssignment.target)
+        )
+        .order_by(desc(TelegramQuizAssignment.created_at))
+    )
+    if status_filter and status_filter.lower() != "all":
+        query = query.where(TelegramQuizAssignment.status == status_filter.lower())
+    if target_id:
+        query = query.where(TelegramQuizAssignment.target_id == target_id)
+    if quiz_id:
+        query = query.where(TelegramQuizAssignment.quiz_id == quiz_id)
+    res = await db.execute(query)
+    assignments = res.scalars().all()
+
+    output = []
+    for a in assignments:
+        item = TelegramQuizAssignmentResponse.model_validate(a)
+        item.quiz_title = a.quiz.title if a.quiz else None
+        item.total_questions = a.quiz.total_questions if a.quiz else 0
+        item.target_title = a.target.title if a.target else None
+        item.target_chat_id = a.target.chat_id if a.target else None
+        item.target_chat_type = a.target.chat_type if a.target else None
+        output.append(item)
+    return ApiResponse(success=True, data=output)
+
+@router.post("/quiz-assignments", response_model=ApiResponse[TelegramQuizAssignmentResponse], status_code=status.HTTP_201_CREATED)
+async def create_quiz_assignment(
+    payload: TelegramQuizAssignmentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    if payload.end_time <= payload.start_time:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End time must be after start time")
+
+    quiz_res = await db.execute(select(TelegramQuiz).where(TelegramQuiz.id == payload.quiz_id))
+    quiz = quiz_res.scalar_one_or_none()
+    if not quiz:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+
+    target_res = await db.execute(select(TelegramQuizTarget).where(TelegramQuizTarget.id == payload.target_id))
+    target = target_res.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz target not found")
+
+    now_utc = datetime.now(timezone.utc)
+    st_utc = payload.start_time if payload.start_time.tzinfo else payload.start_time.replace(tzinfo=timezone.utc)
+    et_utc = payload.end_time if payload.end_time.tzinfo else payload.end_time.replace(tzinfo=timezone.utc)
+
+    status_init = "scheduled"
+    if st_utc <= now_utc < et_utc:
+        status_init = "active"
+
+    asg = TelegramQuizAssignment(
+        quiz_id=payload.quiz_id,
+        target_id=payload.target_id,
+        start_time=st_utc,
+        end_time=et_utc,
+        status=status_init,
+        created_by=current_admin.id,
+    )
+    db.add(asg)
+    await db.commit()
+    await db.refresh(asg)
+
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if payload.announce_now and setting and setting.bot_token:
+        client = TelegramApiClient(token=setting.bot_token)
+        try:
+            await TelegramEngine.publish_quiz_announcement(db, client, asg.id, setting)
+            await db.commit()
+            await db.refresh(asg)
+        except Exception:
+            pass
+
+    resp_item = TelegramQuizAssignmentResponse.model_validate(asg)
+    resp_item.quiz_title = quiz.title
+    resp_item.total_questions = quiz.total_questions
+    resp_item.target_title = target.title
+    resp_item.target_chat_id = target.chat_id
+    resp_item.target_chat_type = target.chat_type
+    return ApiResponse(success=True, message="Quiz assigned and scheduled successfully", data=resp_item)
+
+@router.put("/quiz-assignments/{assignment_id}", response_model=ApiResponse[TelegramQuizAssignmentResponse])
+async def update_quiz_assignment(
+    assignment_id: int,
+    payload: TelegramQuizAssignmentUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(
+        select(TelegramQuizAssignment)
+        .options(
+            selectinload(TelegramQuizAssignment.quiz),
+            selectinload(TelegramQuizAssignment.target)
+        )
+        .where(TelegramQuizAssignment.id == assignment_id)
+    )
+    asg = res.scalar_one_or_none()
+    if not asg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+
+    for field, val in payload.model_dump(exclude_unset=True).items():
+        if val is not None and field in ["start_time", "end_time"] and not val.tzinfo:
+            val = val.replace(tzinfo=timezone.utc)
+        setattr(asg, field, val)
+
+    await db.commit()
+    await db.refresh(asg)
+
+    resp_item = TelegramQuizAssignmentResponse.model_validate(asg)
+    resp_item.quiz_title = asg.quiz.title if asg.quiz else None
+    resp_item.total_questions = asg.quiz.total_questions if asg.quiz else 0
+    resp_item.target_title = asg.target.title if asg.target else None
+    resp_item.target_chat_id = asg.target.chat_id if asg.target else None
+    resp_item.target_chat_type = asg.target.chat_type if asg.target else None
+    return ApiResponse(success=True, message="Assignment updated successfully", data=resp_item)
+
+@router.delete("/quiz-assignments/{assignment_id}", response_model=ApiResponse[Dict[str, Any]])
+async def delete_quiz_assignment(
+    assignment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(select(TelegramQuizAssignment).where(TelegramQuizAssignment.id == assignment_id))
+    asg = res.scalar_one_or_none()
+    if not asg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+    await db.delete(asg)
+    await db.commit()
+    return ApiResponse(success=True, message="Assignment deleted successfully")
+
+@router.post("/quiz-assignments/{assignment_id}/announce", response_model=ApiResponse[Dict[str, Any]])
+async def trigger_quiz_announcement(
+    assignment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if not setting or not setting.bot_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Telegram bot token not configured")
+    client = TelegramApiClient(token=setting.bot_token)
+    res = await TelegramEngine.publish_quiz_announcement(db, client, assignment_id, setting)
+    if not res.get("success"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=res.get("message", "Failed to send announcement"))
+    await db.commit()
+    return ApiResponse(success=True, message="Quiz announcement published to channel/group", data=res)
+
+@router.post("/quiz-assignments/{assignment_id}/publish-leaderboard", response_model=ApiResponse[Dict[str, Any]])
+async def trigger_quiz_leaderboard(
+    assignment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if not setting or not setting.bot_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Telegram bot token not configured")
+    client = TelegramApiClient(token=setting.bot_token)
+    res = await TelegramEngine.publish_quiz_leaderboard(db, client, assignment_id)
+    if not res.get("success"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=res.get("message", "Failed to publish leaderboard"))
+    await db.commit()
+    return ApiResponse(success=True, message="Official leaderboard published to channel/group", data=res)
+
+@router.get("/quiz-assignments/{assignment_id}/leaderboard", response_model=ApiResponse[TelegramQuizLeaderboardResponse])
+async def get_quiz_leaderboard_data(
+    assignment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    res = await db.execute(
+        select(TelegramQuizAssignment)
+        .options(
+            selectinload(TelegramQuizAssignment.quiz),
+            selectinload(TelegramQuizAssignment.target)
+        )
+        .where(TelegramQuizAssignment.id == assignment_id)
+    )
+    asg = res.scalar_one_or_none()
+    if not asg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+
+    p_res = await db.execute(
+        select(TelegramQuizParticipant)
+        .options(selectinload(TelegramQuizParticipant.user))
+        .where(
+            and_(
+                TelegramQuizParticipant.assignment_id == assignment_id,
+                TelegramQuizParticipant.status == "completed"
+            )
+        )
+        .order_by(
+            desc(TelegramQuizParticipant.score),
+            TelegramQuizParticipant.total_time_seconds.asc(),
+            TelegramQuizParticipant.completed_at.asc()
+        )
+        .limit(100)
+    )
+    participants = p_res.scalars().all()
+
+    entries = []
+    for idx, p in enumerate(participants, start=1):
+        entries.append(
+            TelegramQuizLeaderboardEntry(
+                rank=idx,
+                user_id=p.user_id,
+                telegram_id=p.user.telegram_id if p.user else 0,
+                first_name=p.user.first_name if p.user else "Candidate",
+                last_name=p.user.last_name if p.user else None,
+                username=p.user.username if p.user else None,
+                score=float(p.score),
+                correct_count=p.correct_count,
+                wrong_count=p.wrong_count,
+                skipped_count=p.skipped_count,
+                total_time_seconds=p.total_time_seconds,
+                completed_at=p.completed_at,
+            )
+        )
+
+    resp = TelegramQuizLeaderboardResponse(
+        assignment_id=asg.id,
+        quiz_title=asg.quiz.title if asg.quiz else "Quiz",
+        target_title=asg.target.title if asg.target else "Target",
+        total_participants=len(entries),
+        status=asg.status,
+        start_time=asg.start_time,
+        end_time=asg.end_time,
+        leaderboard_published_at=asg.leaderboard_published_at,
+        leaderboard=entries,
+    )
+    return ApiResponse(success=True, data=resp)
+
+@router.post("/quiz-assignments/sync-schedules", response_model=ApiResponse[Dict[str, Any]])
+async def sync_all_quiz_schedules(
+    db: AsyncSession = Depends(get_db),
+    current_admin: Admin = Depends(require_permission("bot:manage")),
+):
+    setting_res = await db.execute(select(BotSetting).limit(1))
+    setting = setting_res.scalar_one_or_none()
+    if not setting or not setting.bot_token:
+        return ApiResponse(success=True, message="Bot token not configured, skipped")
+    client = TelegramApiClient(token=setting.bot_token)
+    await TelegramEngine.sync_quiz_schedules(db, client, setting)
+    await db.commit()
+    return ApiResponse(success=True, message="Quiz schedules synchronized successfully")
