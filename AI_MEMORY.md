@@ -571,7 +571,8 @@ The system defines exactly two administrative roles:
         - **AWS Lambda 502 Bad Gateway & Cold Start Optimization**:
           - Switched Mangum in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) to `lifespan="off"` and guarded `engine.dispose()` to prevent SQLAlchemy engine disposal on connection cycles.
           - Skipped heavy schema inspection (`init_db_and_tables`) on Lambda cold starts in [session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to prevent connection timeouts.
-          - Handled non-HTTP AWS console test events gracefully in `handler` with `200 OK`, eliminating `RuntimeError: The adapter was unable to infer a handler to use for the event`.
+        - **AWS Lambda Python 3.13 MainThread Event Loop Persistence**:
+          - Implemented `_get_or_create_event_loop()` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) and switched from `asyncio.run()` to `loop.run_until_complete()`, ensuring an active event loop always persists on `MainThread` so Mangum never encounters `RuntimeError: There is no current event loop in thread 'MainThread'`.
       - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps

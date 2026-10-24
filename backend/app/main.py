@@ -102,7 +102,20 @@ async def _execute_scheduled_quiz_sync():
         await TelegramEngine.sync_quiz_schedules(db)
         await db.commit()
 
+def _get_or_create_event_loop():
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop
+
 def handler(event, context):
+    loop = _get_or_create_event_loop()
+
     if not isinstance(event, dict):
         return {"statusCode": 200, "body": '{"status":"ok"}'}
 
@@ -112,7 +125,7 @@ def handler(event, context):
         or event.get("action") == "sync_quiz_schedules"
         or event.get("task") == "sync_quiz_schedules"
     ):
-        asyncio.run(_execute_scheduled_quiz_sync())
+        loop.run_until_complete(_execute_scheduled_quiz_sync())
         return {"statusCode": 200, "body": '{"status":"ok","action":"sync_quiz_schedules"}'}
 
     if not (
