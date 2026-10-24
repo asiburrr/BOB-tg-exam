@@ -570,9 +570,10 @@ The system defines exactly two administrative roles:
           - Added `greenlet>=3.0.3` and `sqlalchemy[asyncio]>=2.0.30` to [requirements.txt](file:///d:/Task/web/project/bob/exam/backend/requirements.txt) to resolve `Runtime.ImportModuleError: Unable to import module 'app.main': The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed.` during Lambda cold starts.
         - **AWS Lambda 502 Bad Gateway & Cold Start Optimization**:
           - Switched Mangum in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) to `lifespan="off"` and guarded `engine.dispose()` to prevent SQLAlchemy engine disposal on connection cycles.
-          - Skipped heavy schema inspection (`init_db_and_tables`) on Lambda cold starts in [session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to prevent connection timeouts.
         - **AWS Lambda Python 3.13 MainThread Event Loop Persistence**:
           - Implemented `_get_or_create_event_loop()` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) and switched from `asyncio.run()` to `loop.run_until_complete()`, ensuring an active event loop always persists on `MainThread` so Mangum never encounters `RuntimeError: There is no current event loop in thread 'MainThread'`.
+        - **Environment Variable Simplification**:
+          - Streamlined [backend/.env.example](file:///d:/Task/web/project/bob/exam/backend/.env.example) and created [backend/.env](file:///d:/Task/web/project/bob/exam/backend/.env) containing strictly the 7 essential production environment variables matching AWS Lambda configuration.
       - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps
