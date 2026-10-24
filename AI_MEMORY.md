@@ -22,9 +22,7 @@ The system defines exactly two administrative roles:
 
 # 4. Universal Reusability & Simplicity Doctrine
 - **Keep it Simple & Optimized**: No over-engineering, no unnecessary files, no complex bloat.
-- **CI/CD Auto-Deployment**: Dedicated GitHub Actions workflows for automated continuous integration & continuous deployment:
-  - `.github/workflows/deploy-backend.yml`: Automatically builds dependencies, packages, and updates the AWS Lambda backend on every push to `main`.
-  - `.github/workflows/deploy-frontend.yml`: Automatically builds, validates, and packages the Next.js frontend with standalone optimization on every push to `main`.
+- **Manual Deployment Control**: Auto-deployment GitHub Actions workflows removed per user request for direct deployment management.
 - **Environment Centralization**: All critical parameters reside in `.env` (including `ENABLE_DOCS` toggle to show/hide Swagger/OpenAPI/Redoc documentation endpoints).
 - **Automatic Startup Lifecycle**: On server startup, the database is created if missing, tables and columns synced non-destructively, and the default Administration account is auto-created only when the `admins` table is empty.
 - **UI Components Doctrine**: Build every UI-related element as a standalone, modular component so it can be reused anywhere at any time without duplicating code.
@@ -572,8 +570,8 @@ The system defines exactly two administrative roles:
           - Switched Mangum in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) to `lifespan="off"` and guarded `engine.dispose()` to prevent SQLAlchemy engine disposal on connection cycles.
         - **AWS Lambda Python 3.13 MainThread Event Loop Persistence**:
           - Implemented `_get_or_create_event_loop()` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) and switched from `asyncio.run()` to `loop.run_until_complete()`, ensuring an active event loop always persists on `MainThread` so Mangum never encounters `RuntimeError: There is no current event loop in thread 'MainThread'`.
-        - **Environment Variable Simplification**:
-          - Streamlined [backend/.env.example](file:///d:/Task/web/project/bob/exam/backend/.env.example) and created [backend/.env](file:///d:/Task/web/project/bob/exam/backend/.env) containing strictly the 7 essential production environment variables matching AWS Lambda configuration.
+        - **Auto-Deployment Setup Removed**:
+          - Deleted `.github/workflows/deploy-backend.yml` and `.github/workflows/deploy-frontend.yml` and removed `.github` folder to grant manual control over deployments.
       - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps
