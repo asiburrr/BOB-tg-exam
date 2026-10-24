@@ -48,10 +48,11 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
 
-    try:
-        await engine.dispose()
-    except Exception:
-        pass
+    if not is_lambda:
+        try:
+            await engine.dispose()
+        except Exception:
+            pass
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -90,7 +91,7 @@ async def health_check():
 
 try:
     from mangum import Mangum
-    mangum_handler = Mangum(app, lifespan="auto")
+    mangum_handler = Mangum(app, lifespan="off")
 except Exception:
     mangum_handler = None
 
@@ -102,7 +103,10 @@ async def _execute_scheduled_quiz_sync():
         await db.commit()
 
 def handler(event, context):
-    if isinstance(event, dict) and (
+    if not isinstance(event, dict):
+        return {"statusCode": 200, "body": '{"status":"ok"}'}
+
+    if (
         event.get("source") == "aws.events"
         or event.get("detail-type") == "Scheduled Event"
         or event.get("action") == "sync_quiz_schedules"
@@ -111,6 +115,22 @@ def handler(event, context):
         asyncio.run(_execute_scheduled_quiz_sync())
         return {"statusCode": 200, "body": '{"status":"ok","action":"sync_quiz_schedules"}'}
 
-    if mangum_handler:
-        return mangum_handler(event, context)
-    return {"statusCode": 500, "body": '{"status":"error","message":"Handler not configured"}'}
+    if not (
+        "httpMethod" in event
+        or "rawPath" in event
+        or "requestContext" in event
+    ):
+        return {"statusCode": 200, "body": '{"status":"ok","message":"Lambda test event received"}'}
+
+    try:
+        if mangum_handler:
+            return mangum_handler(event, context)
+        return {"statusCode": 500, "body": '{"status":"error","message":"Handler not configured"}'}
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return {
+            "statusCode": 500,
+            "headers": {"content-type": "application/json"},
+            "body": f'{{"error":"{str(exc)}"}}',
+        }

@@ -564,8 +564,14 @@ The system defines exactly two administrative roles:
           - Elevated layer stack to `z-[9999]` with system `bg-black/60 dark:bg-black/80 backdrop-blur-md` overlay covering 100% of the screen above the sticky navbar and sidebar, resolving clipping under the navigation bar and matching the promotional campaign modal standard.
         - **AWS Lambda Quiz Scheduler Autonomous Operation (Zero Activity)**:
           - Implemented dual-mode execution in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py): traditional servers run the 15-second background loop (`run_quiz_scheduler_worker`), while AWS Lambda intercepts EventBridge / CloudWatch Scheduled Events (`event.get("source") == "aws.events"` or `event.get("detail-type") == "Scheduled Event"`) to execute `TelegramEngine.sync_quiz_schedules(db)` without crashing Mangum.
+        - **AWS Lambda CORS Deduplication**:
+          - Guarded FastAPI's `CORSMiddleware` in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) with `if not is_lambda:` so only AWS Lambda Function URL / API Gateway attaches CORS headers on serverless deployments, preventing duplicate `Access-Control-Allow-Origin: *` headers in browsers.
         - **AWS Lambda Python 3.13 Runtime Dependency Fix**:
           - Added `greenlet>=3.0.3` and `sqlalchemy[asyncio]>=2.0.30` to [requirements.txt](file:///d:/Task/web/project/bob/exam/backend/requirements.txt) to resolve `Runtime.ImportModuleError: Unable to import module 'app.main': The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed.` during Lambda cold starts.
+        - **AWS Lambda 502 Bad Gateway & Cold Start Optimization**:
+          - Switched Mangum in [main.py](file:///d:/Task/web/project/bob/exam/backend/app/main.py) to `lifespan="off"` and guarded `engine.dispose()` to prevent SQLAlchemy engine disposal on connection cycles.
+          - Skipped heavy schema inspection (`init_db_and_tables`) on Lambda cold starts in [session.py](file:///d:/Task/web/project/bob/exam/backend/app/db/session.py) to prevent connection timeouts.
+          - Handled non-HTTP AWS console test events gracefully in `handler` with `200 OK`, eliminating `RuntimeError: The adapter was unable to infer a handler to use for the event`.
       - Verified clean TypeScript compilation (`tsc --noEmit` code 0), Python byte compilation (`compileall` code 0), and strict zero comments policy across all code.
 
 # 8. Immediate Next Steps

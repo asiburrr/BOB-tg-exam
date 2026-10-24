@@ -135,6 +135,8 @@ async def ensure_default_administration():
             await db.commit()
 
 async def init_db_and_tables():
+    if is_lambda:
+        return
     try:
         await ensure_database_exists()
         async with engine.begin() as conn:
